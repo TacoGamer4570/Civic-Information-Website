@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ballot/decoded — 2027 voter guide</title>
+  <meta name="description" content="Pick your state, answer 22 policy questions, and see which 2027 statewide candidates and ballot measures line up with your views. Independent and nonpartisan.">
+  <meta name="theme-color" content="#FFF7EA">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='14' fill='%23D4FF3F' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='%23141414' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <button class="logo" type="button" data-go="home" aria-label="ballot/decoded home">
+      <span class="logo-mark" aria-hidden="true">✓</span>
+      <span class="logo-text">ballot<span class="slash">/</span>decoded</span>
+      <span class="sticker sticker-sm">2027</span>
+    </button>
+    <nav class="site-nav" aria-label="Main">
+      <button type="button" class="link-btn" data-open="method">how it works</button>
+    </nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div id="app" aria-live="polite"></div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p><strong>ballot/decoded</strong> is an independent, nonpartisan project. It isn't affiliated with any candidate, party, or campaign, and it doesn't tell you how to vote. It shows you who's closest to <em>your</em> answers.</p>
+      <p>Your answers never leave your browser. No accounts, no tracking.</p>
+      <p class="mono small">Race data last updated <span id="updated"></span>. Candidate fields change constantly until filing deadlines, so always confirm with your state's election office. Registered yet? <a href="https://vote.gov" target="_blank" rel="noopener">vote.gov</a></p>
+    </div>
+  </footer>
+
+  <dialog id="method" class="modal" aria-labelledby="method-title">
+    <div class="modal-inner">
+      <button type="button" class="modal-close" data-close aria-label="Close">×</button>
+      <h2 id="method-title">how this works <span class="serif">(the honest version)</span></h2>
+
+      <h3>1. Your scores</h3>
+      <p>Each of the 22 questions is tied to one axis. Agreeing or disagreeing pushes you one way or the other. Questions you star count double, and skipped questions don't count at all.</p>
+      <ul>
+        <li><strong>Economy:</strong> −10 (most left) to +10 (most right). Taxes, wages, unions, regulation, spending.</li>
+        <li><strong>Social:</strong> +10 (most liberal) to −10 (most conservative). Abortion, guns, policing, immigration, religion, voting.</li>
+      </ul>
+
+      <h3>2. Candidate positions</h3>
+      <p>We place every candidate on the same two scales using their voting records, actions in office, campaign platforms, and news coverage. Where we know how they'd answer a specific quiz question, we record that too. Every placement shows a <em>confidence</em> level:</p>
+      <ul>
+        <li><strong>High:</strong> long public record on these issues.</li>
+        <li><strong>Medium:</strong> some record, plus party and campaign positioning.</li>
+        <li><strong>Low:</strong> new candidate or thin record. Treat it as a rough guess.</li>
+      </ul>
+      <p>These are editorial estimates, not facts. Reasonable people would put some candidates a point or two somewhere else.</p>
+
+      <h3>3. The match</h3>
+      <p>Your match % starts with how close you are to a candidate on the two-axis map. When we know a candidate's stance on specific questions you answered, those count too (up to 45% of the score), so a candidate who agrees with you on the exact issues you care about gets a boost.</p>
+      <p>For ballot measures and judicial retention votes, we compare where a <em>yes</em> vote and a <em>no</em> vote land, plus your answer to any directly related question.</p>
+
+      <h3>4. What this can't do</h3>
+      <ul>
+        <li>It's 2026, and most 2027 fields aren't final. People will enter, drop out, and lose primaries. We label everyone as <em>declared</em>, <em>expected</em>, <em>exploring</em>, or <em>undecided</em>.</li>
+        <li>Policy isn't everything. Experience, ethics, competence, and electability matter too, and a quiz can't measure them.</li>
+        <li>Judicial and retention races are about judging, not policy. We show which way your views lean, but judges aren't supposed to campaign on issues.</li>
+        <li>Statewide only. Your real ballot will also have local and legislative races.</li>
+      </ul>
+      <p class="mono small">Found a mistake or a new candidate? Open an issue on the project's GitHub repo.</p>
+    </div>
+  </dialog>
+
+  <script src="js/data/questions.js"></script>
+  <script src="js/data/elections.js"></script>
+  <script src="js/scoring.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
