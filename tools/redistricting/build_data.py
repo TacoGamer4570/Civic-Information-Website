@@ -197,7 +197,10 @@ def fill_gaps(st, cache, shp, arcs, polys):
                 part.append([len(arcs) - 1])
             polys[u].append(part)
             added += poly.area
-        shp[u] = polygonal(shapely.make_valid(shapely.union(shp[u], f)))
+        # grow the precinct by the cover margin so it fuses with its new land
+        # (otherwise the seam between them would count as perimeter)
+        grown = shapely.buffer(shp[u], EPS / 2 + 0.5, quad_segs=2)
+        shp[u] = polygonal(shapely.make_valid(shapely.union(grown, f)))
     print(f"  filled {added / 1e6:,.0f} km2 of land with no precinct ({len(pieces)} holes, {len(fills)} precincts grew)")
     return shp
 
