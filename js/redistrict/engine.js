@@ -707,6 +707,7 @@
       function currentLock() {
         if (!isMax) return { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
         const b = partySorted(new Float64Array(k)), pos = new Float64Array(k).fill(-Infinity);
+        for (let q = 0; q < cntTier[0]; q++) pos[q] = thFloor; // safe seats: anywhere at or above the floor
         if (posOn) for (let q = cntTier[0]; q < k; q++) pos[q] = Math.min(b[q], thFloor) - 0.001;
         return { tiers: Array.from(cntTier), pos };
       }
@@ -816,6 +817,9 @@
         if (tierIdx < nTier) { startNextTarget(true); return; }
         tierIdx = nTier - 1;
         posIdx = cntTier[0]; // first district below the floor
+        // Safe seats are floored, not frozen: while squeezing, each may give up votes
+        // (to help the districts below) as long as it stays at or above the floor.
+        for (let q = 0; q < posIdx; q++) posLock[q] = thFloor;
         if (!posOn || posIdx >= k) { posIdx = -1; finishSearch(true); return; }
         startPosition();
       }

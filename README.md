@@ -57,7 +57,7 @@ You choose any number of districts (2 up to one per populated block) and a goal:
 The chain runs in a Web Worker:
 
 1. **Balance population.**
-2. **Hit the partisan goal.** For gerrymander goals the safe-seat margin is a floor: first as many districts as possible won by at least that much; then, with that count locked, as many wins under the floor as possible; then, one district at a time from the best down, each is pushed as close to the floor as it will go and locked, never giving up a seat.
+2. **Hit the partisan goal.** For gerrymander goals the safe-seat margin is a floor: first as many districts as possible won by at least that much; then, with that count locked, as many wins under the floor as possible; then, one district at a time from the best down, each is pushed as close to the floor as it will go and locked, never giving up a seat. Safe seats are floored, not frozen: they can shed surplus votes during this step but never drop below the floor.
 3. **Make it compact.** The seat result is locked while the chain improves Polsby–Popper scores. Skipped, and compactness left out of every score, when you choose *Ignore compactness*.
 4. **Refine with census blocks.** Steps 1–3 move whole precincts (aggregated from blocks) for speed; then the map switches to individual blocks to balance population tightly and smooth borders, seat result still locked. With very many districts (fewer than 8 precincts each), every step runs on blocks.
 

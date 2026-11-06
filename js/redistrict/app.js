@@ -201,7 +201,7 @@
       const gerry = m === "maxD" || m === "maxR";
       el.marginLabel.textContent = gerry ? "Safe-seat floor" : "Safe-seat margin";
       el.marginHint.textContent = gerry
-        ? "First, as many districts as possible won by at least this many points (2024 presidential). Then, with those locked, as many narrower wins as possible. Then every other district, best first, is pushed as close to this floor as it will go, without giving up a seat."
+        ? "First, as many districts as possible won by at least this many points (2024 presidential). Then, with those locked, as many narrower wins as possible. Then every other district, best first, is pushed as close to this floor as it will go, without giving up a seat. Safe seats can give up surplus votes along the way, but never drop below the floor."
         : "A seat only counts if the winner leads by at least this many points in the 2024 presidential vote. 0 = any win.";
       if (!el.margin.dataset.touched) el.margin.value = 3;
     }
@@ -528,7 +528,7 @@
     const tiles = [];
     tiles.push(tile("Seats", '<span class="party-d-ink">' + fmt(dWins) + " D</span> – <span class=\"party-r-ink\">" + fmt(rWins) + " R</span>",
       escapeHtml(goal.text || "") + (!r.gerry && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
-    if (r.gerry) tiles.push(tile("Gerrymander result", gerryBars(r), "Safe seats were maximized first, then wins under the floor; then every other district, best first, was pushed as close to the floor as it would go without giving up a seat.", "rd-tile-wide"));
+    if (r.gerry) tiles.push(tile("Gerrymander result", gerryBars(r), "Safe seats were maximized first, then wins under the floor; then every other district, best first, was pushed as close to the floor as it would go without giving up a seat. Safe seats could shed surplus votes to help, but never below the floor.", "rd-tile-wide"));
     tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
     if (c) {
       tiles.push(tile("Contiguity", c.ok ? "✓ all " + fmt(k) : "✗ " + c.broken.length + " broken",

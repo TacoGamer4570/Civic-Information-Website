@@ -106,6 +106,7 @@ test("gerrymander: safe seats, then wins, then each district pushed toward the f
   assert.strictEqual(r.gerry.wins, m.filter((x) => x > 0).length);
   assert.deepStrictEqual(r.gerry.margins.map((x) => x.toFixed(6)), m.map((x) => x.toFixed(6)));
   assert.ok(r.gerry.safe >= 1);
+  assert.ok(r.gerry.margins.slice(0, r.gerry.safe).every((x) => x >= 4 - 1e-6), "safe seats stay at or above the floor");
   assert.ok(r.contiguity.ok);
 });
 
