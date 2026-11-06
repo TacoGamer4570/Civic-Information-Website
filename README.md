@@ -67,7 +67,7 @@ Moves are ReCom (merge two districts, cut a random spanning tree into equal halv
 The files in `data/redistricting/` are generated. To rebuild them (downloads ~250 MB from `int.nyt.com` and `www2.census.gov`):
 
 ```bash
-pip install shapely pyproj numpy
+pip install shapely pyproj numpy geopandas
 python3 tools/redistricting/build_data.py TX CA PA
 ```
 

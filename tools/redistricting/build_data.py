@@ -11,10 +11,11 @@ For each state this script:
   5. simplifies the shapes and writes data/redistricting/<st>.js.
 
 Usage:
-  pip install shapely pyproj numpy
+  pip install shapely pyproj numpy geopandas
   python3 tools/redistricting/build_data.py --cache /tmp/rd-cache [TX CA PA]
 
 Downloads (~250 MB) are cached in --cache.
+Needs geopandas too (to read the census state outline).
 """
 import argparse
 import gzip
@@ -36,6 +37,7 @@ STATES = {
     "PA": {"fips": "42", "name": "Pennsylvania", "seats": 17, "pl": "Pennsylvania", "tol": 35},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
+STATE_URL = "https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_state_500k.zip"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
           "01-Redistricting_File--PL_94-171/{name}/{st}2020.pl.zip")
 
@@ -46,6 +48,7 @@ OUT_DIR = os.path.join(ROOT, "data", "redistricting")
 TO_ALBERS = Transformer.from_crs("EPSG:4326", "EPSG:5070", always_xy=True)
 EPS = 5.0          # meters: borders closer than this count as touching
 MIN_SHARED = 20.0  # meters of shared border needed to be neighbors (corners don't count)
+GAP_CELL = 1500.0  # meters: grid used to split large holes in the precinct coverage
 
 
 def polygonal(g):
@@ -140,6 +143,63 @@ def dp_simplify(pts, tol):
     return pts[keep]
 
 
+def fill_gaps(st, cache, shp, arcs, polys):
+    """Give land with no precinct (the NYT data leaves out precincts with no
+    votes) to neighboring precincts, so the map covers the whole state.
+
+    Small holes go to one neighbor; big ones are cut into GAP_CELL squares,
+    each given to the nearest precinct. New rings are appended to `arcs` and
+    `polys` (in place). Returns the updated precinct geometries.
+    """
+    import geopandas as gpd
+    states = gpd.read_file(fetch(STATE_URL, os.path.join(cache, "cb_2020_us_state_500k.zip")))
+    outline = states[states.STUSPS == st].to_crs(5070).geometry.iloc[0]
+    cover = shapely.union_all(shapely.buffer(shp, EPS / 2, quad_segs=2))
+    gap = shapely.difference(outline, cover)
+    # drop slivers along the (generalized) state outline
+    gap = shapely.buffer(shapely.buffer(gap, -150, quad_segs=2), 150, quad_segs=2)
+    gap = shapely.difference(gap, cover)
+    pieces = [g for g in shapely.get_parts(gap) if g.area > 2e5]
+    tree = shapely.STRtree(shp)
+    fills = {}
+    for g in pieces:
+        if g.area < 4 * GAP_CELL ** 2:
+            cand = tree.query(g, predicate="dwithin", distance=50)
+            if len(cand) == 0:
+                cand = [tree.query_nearest(g)[0]]
+            touch = shapely.length(shapely.intersection(shapely.boundary(g), shapely.buffer(shp[cand], 50, quad_segs=2)))
+            fills.setdefault(int(cand[int(np.argmax(touch))]), []).append(g)
+            continue
+        x0, y0, x1, y1 = g.bounds
+        xs = np.arange(x0, x1, GAP_CELL)
+        ys = np.arange(y0, y1, GAP_CELL)
+        gx, gy = np.meshgrid(xs, ys)
+        boxes = shapely.box(gx.ravel(), gy.ravel(), gx.ravel() + GAP_CELL, gy.ravel() + GAP_CELL)
+        shapely.prepare(g)
+        boxes = boxes[shapely.intersects(g, boxes)]
+        cells = shapely.intersection(boxes, g)
+        cells = cells[~shapely.is_empty(cells)]
+        owner = tree.query_nearest(shapely.point_on_surface(cells))[1]
+        for u in np.unique(owner):
+            fills.setdefault(int(u), []).append(shapely.union_all(cells[owner == u]))
+    added = 0.0
+    for u, parts in fills.items():
+        f = polygonal(shapely.make_valid(shapely.union_all(parts)))
+        for poly in shapely.get_parts(f):
+            if poly.geom_type != "Polygon" or poly.area < 1e3:
+                continue
+            rings = [np.asarray(poly.exterior.coords)] + [np.asarray(r.coords) for r in poly.interiors]
+            part = []
+            for r in rings:
+                arcs.append(r[:, :2].copy())
+                part.append([len(arcs) - 1])
+            polys[u].append(part)
+            added += poly.area
+        shp[u] = polygonal(shapely.make_valid(shapely.union(shp[u], f)))
+    print(f"  filled {added / 1e6:,.0f} km2 of land with no precinct ({len(pieces)} holes, {len(fills)} precincts grew)")
+    return shp
+
+
 def build(st, cache):
     meta = STATES[st]
     print(f"[{st}] loading precincts")
@@ -160,6 +220,7 @@ def build(st, cache):
             parts.append(shapely.Polygon(rings[0], rings[1:]))
         shp.append(shapely.MultiPolygon(parts) if len(parts) > 1 else parts[0])
     shp = np.array([polygonal(g) for g in shapely.make_valid(np.array(shp, dtype=object))], dtype=object)
+    shp = fill_gaps(st, cache, shp, arcs, polys)
     area = shapely.area(shp)
     cent = shapely.point_on_surface(shp)
     cx, cy = shapely.get_x(cent), shapely.get_y(cent)
