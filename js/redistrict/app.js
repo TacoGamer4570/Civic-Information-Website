@@ -5,7 +5,8 @@
   const STATES = {
     TX: { name: "Texas", seats: 38 }, CA: { name: "California", seats: 52 }, FL: { name: "Florida", seats: 28 },
     PA: { name: "Pennsylvania", seats: 17 }, NC: { name: "North Carolina", seats: 14 }, MI: { name: "Michigan", seats: 13 },
-    VA: { name: "Virginia", seats: 11 },
+    VA: { name: "Virginia", seats: 11 }, OH: { name: "Ohio", seats: 15 }, GA: { name: "Georgia", seats: 14 },
+    WI: { name: "Wisconsin", seats: 8 }, NV: { name: "Nevada", seats: 4 },
   };
   // steps for the partisan search; polishing steps per precinct (first stage) and per block (second stage)
   const EFFORT = {

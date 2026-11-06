@@ -46,7 +46,7 @@ Most fields aren't final yet. Every candidate is tagged **running**, **expected 
 
 ## Redistricting simulator
 
-`redistricting.html` draws maps for **Texas, California, Florida, Pennsylvania, North Carolina, Michigan, and Virginia** with Markov chain Monte Carlo, built from **2020 Census blocks** (from 163k in VA to 669k in TX):
+`redistricting.html` draws maps for **Texas, California, Florida, Pennsylvania, Ohio, Georgia, North Carolina, Michigan, Virginia, Wisconsin, and Nevada** with Markov chain Monte Carlo, built from **2020 Census blocks** (from 57k in NV to 669k in TX):
 
 - **Population:** exact 2020 Census block counts (P.L. 94-171).
 - **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)), split to the blocks inside each precinct by voting-age population. Block votes are estimates; statewide totals match the precinct data exactly.
@@ -71,7 +71,7 @@ The files in `data/redistricting/` are generated (about 93 MB). To rebuild them 
 
 ```bash
 pip install shapely pyproj numpy scipy geopandas rasterio
-python3 tools/redistricting/build_data.py TX CA PA FL NC MI VA
+python3 tools/redistricting/build_data.py TX CA PA FL NC MI VA OH GA NV WI
 ```
 
 ## Project layout

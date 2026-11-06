@@ -15,7 +15,7 @@ For each state this script:
 
 Usage:
   pip install shapely pyproj numpy scipy geopandas rasterio
-  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI] [--cache DIR]
+  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI] [--cache DIR]
 
 Downloads (~1.8 GB) are cached in --cache (default .cache/redistricting).
 """
@@ -43,6 +43,10 @@ STATES = {
     "NC": {"fips": "37", "name": "North Carolina", "seats": 14, "pl": "North_Carolina"},
     "FL": {"fips": "12", "name": "Florida", "seats": 28, "pl": "Florida"},
     "MI": {"fips": "26", "name": "Michigan", "seats": 13, "pl": "Michigan"},
+    "OH": {"fips": "39", "name": "Ohio", "seats": 15, "pl": "Ohio"},
+    "GA": {"fips": "13", "name": "Georgia", "seats": 14, "pl": "Georgia"},
+    "NV": {"fips": "32", "name": "Nevada", "seats": 4, "pl": "Nevada"},
+    "WI": {"fips": "55", "name": "Wisconsin", "seats": 8, "pl": "Wisconsin"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
@@ -110,6 +114,9 @@ def load_precincts(st, cache):
     arcs = decode_arcs(topo)
     shp = []
     for g in geoms:
+        if "arcs" not in g:  # a few precincts come without a shape
+            shp.append(shapely.Polygon())
+            continue
         poly = [g["arcs"]] if g["type"] == "Polygon" else g["arcs"]
         parts = [shapely.Polygon(ring_coords(rp[0], arcs), [ring_coords(r, arcs) for r in rp[1:]]) for rp in poly]
         shp.append(shapely.MultiPolygon(parts) if len(parts) > 1 else parts[0])
@@ -341,7 +348,19 @@ def build(st, cache):
     orphan = np.flatnonzero(tot <= 0)
     xb, xd, xr = [], [], []
     if len(orphan):
-        rp = shapely.point_on_surface(pshp[orphan])
+        # a precinct with no shape borrows the location of a sibling with the same
+        # name stem (e.g. "RIVERSIDE-C" -> "RIVERSIDE-B"), or else any precinct in its county
+        ids = [p["GEOID"] for p in props]
+        where = list(pshp[orphan])
+        for i, o in enumerate(orphan):
+            if not where[i].is_empty:
+                continue
+            stem, county5 = ids[o].rsplit("-", 1)[0], ids[o][:5]
+            sib = [j for j, g in enumerate(ids) if j != o and not pshp[j].is_empty and g.startswith(stem)] or \
+                  [j for j, g in enumerate(ids) if j != o and not pshp[j].is_empty and g.startswith(county5)]
+            where[i] = pshp[sib[0]]
+            log(f"  precinct {ids[o]} has no shape; its votes go near {ids[sib[0]]}")
+        rp = shapely.point_on_surface(np.array(where, dtype=object))
         _, nearest = cKDTree(np.c_[px, py]).query(np.c_[shapely.get_x(rp), shapely.get_y(rp)])
         keep = (pdem[orphan] + prep[orphan]) > 0
         xb, xd, xr = nearest[keep].tolist(), pdem[orphan][keep].astype(int).tolist(), prep[orphan][keep].astype(int).tolist()

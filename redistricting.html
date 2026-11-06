@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Redistricting Simulator — ballot/decoded</title>
-  <meta name="description" content="Draw congressional maps for Texas, California, Florida, Pennsylvania, North Carolina, Michigan, or Virginia with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
+  <meta name="description" content="Draw congressional maps for Texas, California, Florida, Pennsylvania, Ohio, Georgia, North Carolina, Michigan, Virginia, Wisconsin, or Nevada with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
   <meta name="theme-color" content="#FFF7EA">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='14' fill='%23D4FF3F' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='%23141414' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -46,7 +46,11 @@
             <label title="Pennsylvania"><input type="radio" name="state" value="PA" aria-label="Pennsylvania"><span>PA<small>17 seats</small></span></label>
             <label title="North Carolina"><input type="radio" name="state" value="NC" aria-label="North Carolina"><span>NC<small>14 seats</small></span></label>
             <label title="Michigan"><input type="radio" name="state" value="MI" aria-label="Michigan"><span>MI<small>13 seats</small></span></label>
+            <label title="Ohio"><input type="radio" name="state" value="OH" aria-label="Ohio"><span>OH<small>15 seats</small></span></label>
+            <label title="Georgia"><input type="radio" name="state" value="GA" aria-label="Georgia"><span>GA<small>14 seats</small></span></label>
             <label title="Virginia"><input type="radio" name="state" value="VA" aria-label="Virginia"><span>VA<small>11 seats</small></span></label>
+            <label title="Wisconsin"><input type="radio" name="state" value="WI" aria-label="Wisconsin"><span>WI<small>8 seats</small></span></label>
+            <label title="Nevada"><input type="radio" name="state" value="NV" aria-label="Nevada"><span>NV<small>4 seats</small></span></label>
           </div>
           <p class="rd-statline mono small" id="rd-statline">Loading census blocks…</p>
         </fieldset>
@@ -233,7 +237,7 @@
       <h2 id="rd-method-title">how the simulator works</h2>
 
       <h3>The building blocks</h3>
-      <p>The map is made of 2020 Census blocks, the smallest areas the Census counts: from about 163,000 in Virginia to 669,000 in Texas. Each block carries:</p>
+      <p>The map is made of 2020 Census blocks, the smallest areas the Census counts: from about 57,000 in Nevada to 669,000 in Texas. Each block carries:</p>
       <ul>
         <li><strong>Population</strong>, the exact 2020 Census count.</li>
         <li><strong>Votes</strong> for Harris and Trump in 2024, estimated. Results are only reported by precinct, so each precinct's votes are split among its blocks by voting-age population.</li>
