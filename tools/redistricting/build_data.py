@@ -166,7 +166,7 @@ def fill_gaps(st, cache, shp, arcs, polys):
         if g.area < 4 * GAP_CELL ** 2:
             cand = tree.query(g, predicate="dwithin", distance=50)
             if len(cand) == 0:
-                cand = [tree.query_nearest(g)[0]]
+                cand = tree.query_nearest(g, all_matches=False)
             touch = shapely.length(shapely.intersection(shapely.boundary(g), shapely.buffer(shp[cand], 50, quad_segs=2)))
             fills.setdefault(int(cand[int(np.argmax(touch))]), []).append(g)
             continue
@@ -179,7 +179,9 @@ def fill_gaps(st, cache, shp, arcs, polys):
         boxes = boxes[shapely.intersects(g, boxes)]
         cells = shapely.intersection(boxes, g)
         cells = cells[~shapely.is_empty(cells)]
-        owner = tree.query_nearest(shapely.point_on_surface(cells))[1]
+        near = tree.query_nearest(shapely.point_on_surface(cells), all_matches=False)
+        owner = np.empty(len(cells), dtype=np.int64)
+        owner[near[0]] = near[1]
         for u in np.unique(owner):
             fills.setdefault(int(u), []).append(shapely.union_all(cells[owner == u]))
     added = 0.0
