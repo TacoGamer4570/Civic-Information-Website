@@ -237,7 +237,7 @@
       <ul>
         <li><strong>Population</strong>, the exact 2020 Census count.</li>
         <li><strong>Votes</strong> for Harris and Trump in 2024, estimated. Results are only reported by precinct, so each precinct's votes are split among its blocks by voting-age population.</li>
-        <li><strong>Neighbors</strong>: the blocks it shares a border with, and how long that border is, straight from the Census's own map. The rare island with no water block next to it is linked to the nearest block.</li>
+        <li><strong>Neighbors</strong>: the blocks it shares a border with, and how long that border is, straight from the Census's own map. Districts must be connected <em>over land</em>: a district can't hop across a bay, lake, or wide river. The only exception is land that water cuts off completely (islands, Michigan's Upper Peninsula, Virginia's Eastern Shore), which is linked to the nearest land across the water. Water blocks follow the land next to them, and still count toward a district's shape.</li>
       </ul>
 
       <h3>The algorithm (MCMC)</h3>
@@ -251,7 +251,7 @@
       <h3>The phases</h3>
       <ol>
         <li><strong>Balance population</strong> until every district is within your tolerance of the ideal size.</li>
-        <li><strong>Hit the partisan goal.</strong> The score measures how far the map is from the target seat split, counting a seat only if it's won by your safe margin. For "gerrymander" goals the target keeps rising until the chain can't reach the next seat.</li>
+        <li><strong>Hit the partisan goal.</strong> The score measures how far the map is from the target seat split, counting a seat only if it's won by your safe margin. For "gerrymander" goals the safe-seat margin is a floor: the chain first packs in as many districts as possible won by at least that much. With that number locked, it maximizes narrower wins, then toss-ups (losing by under 5 points), then districts losing by under 15, so the rest of the map is as favorable as possible too.</li>
         <li><strong>Make it compact</strong> (unless you chose to ignore compactness). The seat result is locked in, and the chain minimizes total district "roundness" cost (Polsby–Popper: 1.0 is a circle, lower is more stretched), with a penalty for splitting counties if you asked for one.</li>
         <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>

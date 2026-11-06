@@ -50,14 +50,14 @@ Most fields aren't final yet. Every candidate is tagged **running**, **expected 
 
 - **Population:** exact 2020 Census block counts (P.L. 94-171).
 - **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)), split to the blocks inside each precinct by voting-age population. Block votes are estimates; statewide totals match the precinct data exactly.
-- **Map:** block adjacency and shared-border lengths straight from the Census's TIGER/Line topology (water blocks stay in the graph so islands and peninsulas connect, but are drawn as water), plus "id images" of each state (each pixel = the block under it) for fast drawing, with sharper tiles loaded on zoom.
+- **Map:** block adjacency and shared-border lengths straight from the Census's TIGER/Line topology Districts must connect **over land**: water blocks are left out of the search, and only land cut off by water (islands, Michigan's Upper Peninsula, Virginia's Eastern Shore...) is linked to the nearest land across it. Water blocks follow the land next to them and still count toward district shapes, plus "id images" of each state (each pixel = the block under it) for fast drawing, with sharper tiles loaded on zoom.
 
 You choose any number of districts (2 up to one per populated block) and a goal: fair & compact, proportional, an exact seat split, a max-Democratic or max-Republican gerrymander, or as many competitive seats as possible. You also set a safe-seat margin, population tolerance (down to ±0.001%), how hard to avoid county splits, and whether to keep districts compact or ignore compactness entirely (districts are always contiguous either way).
 
 The chain runs in a Web Worker:
 
 1. **Balance population.**
-2. **Hit the partisan goal.** Gerrymander goals keep raising the target until the next seat can't be reached.
+2. **Hit the partisan goal.** For gerrymander goals the safe-seat margin is a floor: first as many districts as possible won by at least that much; then, with that count locked, as many narrower wins, then toss-ups (losing by under 5), then districts losing by under 15.
 3. **Make it compact.** The seat result is locked while the chain improves Polsby–Popper scores. Skipped, and compactness left out of every score, when you choose *Ignore compactness*.
 4. **Refine with census blocks.** Steps 1–3 move whole precincts (aggregated from blocks) for speed; then the map switches to individual blocks to balance population tightly and smooth borders, seat result still locked. With very many districts (fewer than 8 precincts each), every step runs on blocks.
 

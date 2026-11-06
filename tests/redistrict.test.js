@@ -98,6 +98,17 @@ test("exact seat target is reached and kept through the compactness phase", () =
   assert.ok(r.contiguity.ok);
 });
 
+test("gerrymander tiers: safe seats first, then each tier below, all reported", () => {
+  const e = run(G, { k: 6, mode: "maxD", margin: 4, tol: 0.02 });
+  const r = e.report(true);
+  assert.deepStrictEqual(r.tiers.map((t) => t.margin), [4, 0, -5, -15]);
+  for (let j = 1; j < r.tiers.length; j++) assert.ok(r.tiers[j].count >= r.tiers[j - 1].count, "tiers are cumulative");
+  const m = r.districts.map((d) => 200 * d.share - 100);
+  assert.strictEqual(r.tiers[0].count, m.filter((x) => x >= 4).length);
+  assert.strictEqual(r.tiers[1].count, m.filter((x) => x > 0).length);
+  assert.ok(r.goal.text.includes("Below that"));
+});
+
 test("max-D beats max-R in Democratic seats", () => {
   const d = run(G, { k: 6, mode: "maxD", tol: 0.02 }).report(true);
   const r = run(G, { k: 6, mode: "maxR", tol: 0.02 }).report(true);
@@ -203,7 +214,25 @@ for (const st of Object.keys(EXPECT)) {
   });
 }
 
-test("PA: a quick real run gives contiguous block districts within ±0.1%", () => {
+// Independent check from the raw census data: within each district, land blocks
+// connect through land borders, plus the links for land cut off by water. No other
+// crossing of water counts.
+function landContiguous(st, blockAssign, k) {
+  const { meta, A } = loaded[st];
+  const n = meta.n, parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const join = (a, b) => { if (A.water[a] || A.water[b] || blockAssign[a] !== blockAssign[b]) return; parent[find(a)] = find(b); };
+  let e = 0;
+  for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) join(u, u + A.dv[e]); // includes old zero-length island links
+  const br = meta.landBridges;
+  for (let i = 0; i < br.length; i += 2) join(br[i], br[i + 1]);
+  const roots = new Array(k).fill(null).map(() => new Set());
+  for (let u = 0; u < n; u++) if (!A.water[u]) roots[blockAssign[u]].add(find(u));
+  return roots.every((r) => r.size === 1);
+}
+
+test("PA: a quick real run gives districts connected over land, within ±0.1%", () => {
   const { graph } = loaded.PA;
   const g = RE.buildGraph(graph);
   const p = RE.createPipeline(g, graph.group, { k: 17, mode: "proportional", margin: 0, tol: 0.001, seed: 2, searchSteps: 4000, coarsePolishSteps: 30000, finePolishSteps: 100000 });
@@ -211,8 +240,19 @@ test("PA: a quick real run gives contiguous block districts within ±0.1%", () =
   while (!p.run(5000));
   const r = p.report(true);
   assert.ok(r.contiguity.ok);
-  assert.ok(connectedParts(g, p.assignment(), 17).every((c) => c === 1));
   assert.ok(r.maxDev <= 0.001 + 1e-9, String(r.maxDev));
+  assert.ok(landContiguous("PA", RE.expandAssign(graph, p.assignment()), 17), "land-only contiguity");
+  assert.ok(r.meanPP > 0.1 && r.meanPP < 1, "compactness in a sane range: " + r.meanPP);
+});
+
+test("MI: districts connect over land; the Upper Peninsula only through its water link", () => {
+  const { graph } = loaded.MI;
+  const g = RE.buildGraph(graph);
+  const p = RE.createPipeline(g, graph.group, { k: 13, mode: "neutral", tol: 0.005, seed: 3, searchSteps: 2000, coarsePolishSteps: 20000, finePolishSteps: 50000 });
+  p.init();
+  while (!p.run(5000));
+  assert.ok(p.report(true).contiguity.ok);
+  assert.ok(landContiguous("MI", RE.expandAssign(graph, p.assignment()), 13));
 });
 
 console.log("\n" + passed + " passed" + (process.exitCode ? ", some FAILED" : ""));

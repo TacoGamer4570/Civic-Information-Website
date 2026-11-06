@@ -198,8 +198,11 @@
       el.marginHint.textContent = "A district counts as competitive if the 2024 margin is within this many points.";
       if (!el.margin.dataset.compTouched) el.margin.value = 5;
     } else {
-      el.marginLabel.textContent = "Safe-seat margin";
-      el.marginHint.textContent = "A seat only counts if the winner leads by at least this many points in the 2024 presidential vote. 0 = any win.";
+      const gerry = m === "maxD" || m === "maxR";
+      el.marginLabel.textContent = gerry ? "Safe-seat floor" : "Safe-seat margin";
+      el.marginHint.textContent = gerry
+        ? "First, as many districts as possible won by at least this many points (2024 presidential). Then, with those locked, as many narrower wins, then toss-ups (losing by under 5), then districts losing by under 15."
+        : "A seat only counts if the winner leads by at least this many points in the 2024 presidential vote. 0 = any win.";
       if (!el.margin.dataset.touched) el.margin.value = 3;
     }
     syncMargin();
@@ -273,7 +276,7 @@
     showLiveOrBest(final);
     if (msg.type === "ready") { S.worker.postMessage({ cmd: "run" }); renderLegend(); }
     const now = performance.now();
-    if (final || fresh || msg.type === "ready" || msg.type === "paused" || (S.assign === S.liveAssign && now - S.lastDraw > 300)) {
+    if (final || fresh || msg.type === "ready" || msg.type === "paused" || (S.landAssign === S.liveAssign && now - S.lastDraw > 300)) {
       S.lastDraw = now;
       renderPlan();
       renderResults();
@@ -287,8 +290,14 @@
   }
 
   function showLiveOrBest(final) {
-    if (S.opts && S.opts.endless && S.best && !final && !el.live.checked) { S.assign = S.best.assign; S.report = S.best.report; }
-    else { S.assign = S.liveAssign; S.report = S.liveReport; }
+    if (S.opts && S.opts.endless && S.best && !final && !el.live.checked) { S.landAssign = S.best.assign; S.report = S.best.report; }
+    else { S.landAssign = S.liveAssign; S.report = S.liveReport; }
+    // the engine works on land; every census block (water included) follows its land block
+    if (S.landAssign && S.expandedFrom !== S.landAssign) {
+      S.expanded = window.RedistrictEngine.expandAssign(S.D.graph, S.landAssign, S.expanded && S.expanded.length === S.D.n ? S.expanded : null);
+      S.expandedFrom = S.landAssign;
+    }
+    S.assign = S.landAssign ? S.expanded : null;
   }
 
   // ---------- status ----------
@@ -332,7 +341,7 @@
       if (r.phase === "done") {
         const c = r.contiguity;
         text = "<strong>Stopped after " + r.endless.cycle + " cycle" + (r.endless.cycle === 1 ? "" : "s") + ".</strong> Showing the best map: " + escapeHtml(best) + ". " +
-          (c && c.ok ? "All " + fmt(r.k) + " districts verified contiguous." : "Contiguity check failed.") + " <span class='muted'>seed " + S.seedUsed + "</span>";
+          (c && c.ok ? "All " + fmt(r.k) + " districts verified connected over land." : "Contiguity check failed.") + " <span class='muted'>seed " + S.seedUsed + "</span>";
         setStatus("done", 1, text);
       } else {
         const unit = r.stage === "precinct" ? "precincts" : "census blocks";
@@ -353,7 +362,7 @@
     let text;
     if (r.phase === "done") {
       const c = r.contiguity;
-      text = (c && c.ok ? "<strong>Done.</strong> All " + fmt(r.k) + " districts verified contiguous at the census-block level." : "<strong>Done</strong>, but " + (c ? c.broken.length : "?") + " district(s) failed the contiguity check.") + " <span class='muted'>" + steps + " · seed " + S.seedUsed + "</span>";
+      text = (c && c.ok ? "<strong>Done.</strong> All " + fmt(r.k) + " districts verified connected over land, block by block." : "<strong>Done</strong>, but " + (c ? c.broken.length : "?") + " district(s) failed the contiguity check.") + " <span class='muted'>" + steps + " · seed " + S.seedUsed + "</span>";
     } else if (type === "paused") {
       text = "<strong>Paused.</strong> " + escapeHtml(r.goal.text || "") + " <span class='muted'>" + steps + "</span>";
     } else {
@@ -375,7 +384,7 @@
   function computeDistrictColors() {
     // Greedy graph coloring so neighboring districts never share a color;
     // districts keep their previous color when they can (less flicker).
-    const g = S.D.graph, a = S.assign, k = S.report.k;
+    const g = S.D.graph, a = S.landAssign, k = S.report.k;
     const nb = Array.from({ length: k }, () => new Set());
     for (let i = 0; i < g.eu.length; i++) {
       const x = a[g.eu[i]], y = a[g.ev[i]];
@@ -465,13 +474,13 @@
       if (S.hoverDistrict >= 0) { S.hoverDistrict = -1; S.map.highlightDistrict = -1; S.map.draw(); highlightRow(-1); }
       return;
     }
-    const D = S.D, A = D.A, m = D.meta, g = D.graph;
+    const D = S.D, A = D.A, m = D.meta, g = D.graph, li = g.attach[u];
     const p = A.precinct[u];
     const pd = m.precincts.dem[p], pr = m.precincts.rep[p], pt = pd + pr;
     const county = m.counties[A.county[u]].name;
     const pname = m.precincts.id[p].replace(/^\d{5}-?/, "") || m.precincts.id[p];
     let html = '<div class="rd-tip-h">Block ' + blockGeoid(u) + ' <span class="muted">' + escapeHtml(county) + "</span></div>" +
-      '<div class="mono small">' + fmt(A.pop[u]) + " people" + (g.dem[u] + g.rep[u] >= 0.5 ? " · est. " + fmt(g.dem[u]) + " Harris, " + fmt(g.rep[u]) + " Trump" : "") + "</div>" +
+      '<div class="mono small">' + fmt(A.pop[u]) + " people" + (g.dem[li] + g.rep[li] >= 0.5 ? " · est. " + fmt(g.dem[li]) + " Harris, " + fmt(g.rep[li]) + " Trump" : "") + "</div>" +
       '<div class="mono small muted">Precinct ' + escapeHtml(pname) + ": " + (pt ? "Harris " + pct(pd / pt) + " · Trump " + pct(pr / pt) : "no votes reported") + "</div>";
     let di = -1;
     if (S.assign && S.report) {
@@ -518,11 +527,12 @@
     const c = r.contiguity;
     const tiles = [];
     tiles.push(tile("Seats", '<span class="party-d-ink">' + fmt(dWins) + " D</span> – <span class=\"party-r-ink\">" + fmt(rWins) + " R</span>",
-      escapeHtml(goal.text || "") + (S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
+      escapeHtml(goal.text || "") + (!r.tiers && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
+    if (r.tiers) tiles.push(tile("Gerrymander tiers", tierBars(r), "Districts by margin for " + (S.opts.mode === "maxD" ? "Democrats" : "Republicans") + ". Each tier was maximized after the one above it was locked in.", "rd-tile-wide"));
     tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
     if (c) {
       tiles.push(tile("Contiguity", c.ok ? "✓ all " + fmt(k) : "✗ " + c.broken.length + " broken",
-        c.ok ? "Every district is one connected set of census blocks" + (c.water ? " (" + c.water + " cross water to islands)" : "") : "Districts " + c.broken.slice(0, 10).map((x) => x + 1).join(", ") + " are split", c.ok ? "is-good" : "is-bad"));
+        c.ok ? "Every district is connected over land. Water is only crossed to reach islands or land cut off by water" + (c.water ? " (" + c.water + " district" + (c.water === 1 ? " does" : "s do") + ")" : "") + "." : "Districts " + c.broken.slice(0, 10).map((x) => x + 1).join(", ") + " are split", c.ok ? "is-good" : "is-bad"));
     } else {
       tiles.push(tile("Contiguity", "…", "Every move keeps districts connected; the final check runs at the end"));
     }
@@ -540,6 +550,20 @@
     renderChart(r);
     renderTable(r);
     el.notes.innerHTML = (r.notes || []).map(escapeHtml).join(" ");
+  }
+
+  // one row per tier: count of districts at or above that margin for the favored party
+  function tierBars(r) {
+    const k = r.k, t = r.tiers, other = S.opts.mode === "maxD" ? "R" : "D";
+    const rows = [];
+    let prev = 0;
+    t.forEach((x, j) => {
+      const label = x.margin > 0 ? "Won by " + x.margin + "+" : x.margin === 0 ? (j ? "Won by less" : "Won") : "Losing by <" + -x.margin;
+      rows.push({ label, n: x.count - prev });
+      prev = x.count;
+    });
+    rows.push({ label: "Safe " + other, n: k - prev });
+    return '<div class="rd-tiers">' + rows.map((x) => '<div class="rd-tier"><span>' + x.label + '</span><strong>' + fmt(x.n) + "</strong></div>").join("") + "</div>";
   }
 
   function renderChart(r) {

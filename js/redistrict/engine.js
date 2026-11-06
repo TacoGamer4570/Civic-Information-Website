@@ -40,20 +40,24 @@
     }
 
     // ---------- graphs ----------
-    // d: { n, pop, dem, rep, area (m^2), ext (m), county, eu, ev, elen } (arrays or typed arrays)
+    // d: { n, pop, dem, rep, area (m^2), ext (m), county, eu, ev, elen, econn? } (arrays or typed arrays)
+    // econn per edge: 1 = land border (counts for contiguity), 2 = link across water
+    // for land cut off by water (counts for contiguity), 0 = shape only (a border
+    // through water: counts toward perimeters, never toward contiguity). Default 1.
     function buildGraph(d) {
       const n = d.n;
       const E = d.eu.length;
       const eu = Int32Array.from(d.eu), ev = Int32Array.from(d.ev), elen = Float64Array.from(d.elen);
+      const econn = d.econn ? Uint8Array.from(d.econn) : new Uint8Array(E).fill(1);
       const deg = new Int32Array(n);
       for (let i = 0; i < E; i++) { deg[eu[i]]++; deg[ev[i]]++; }
       const start = new Int32Array(n + 1);
       for (let i = 0; i < n; i++) start[i + 1] = start[i] + deg[i];
-      const nbr = new Int32Array(2 * E), nlen = new Float64Array(2 * E);
+      const nbr = new Int32Array(2 * E), nlen = new Float64Array(2 * E), nconn = new Uint8Array(2 * E);
       const fill = start.slice(0, n);
       for (let i = 0; i < E; i++) {
-        let p = fill[eu[i]]++; nbr[p] = ev[i]; nlen[p] = elen[i];
-        p = fill[ev[i]]++; nbr[p] = eu[i]; nlen[p] = elen[i];
+        let p = fill[eu[i]]++; nbr[p] = ev[i]; nlen[p] = elen[i]; nconn[p] = econn[i];
+        p = fill[ev[i]]++; nbr[p] = eu[i]; nlen[p] = elen[i]; nconn[p] = econn[i];
       }
       const pop = Float64Array.from(d.pop), dem = Float64Array.from(d.dem), rep = Float64Array.from(d.rep);
       const area = Float64Array.from(d.area), county = d.county ? Int32Array.from(d.county) : new Int32Array(n);
@@ -65,7 +69,7 @@
         for (let j = start[u]; j < start[u + 1]; j++) b += nlen[j];
         border[u] = b;
       }
-      return { n, E, eu, ev, elen, start, nbr, nlen, border, pop, dem, rep, area, county, nc };
+      return { n, E, eu, ev, elen, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county, nc };
     }
 
     // Merge units into groups (e.g. blocks -> precincts). label[u] = group id (any ints >= 0).
@@ -95,20 +99,24 @@
         const a = groupOf[g.eu[i]], b = groupOf[g.ev[i]];
         if (a === b) continue;
         const key = a < b ? a * m + b : b * m + a;
-        shared.set(key, (shared.get(key) || 0) + g.elen[i]);
+        const cur = shared.get(key);
+        const c = g.econn[i];
+        if (cur) { cur.L += g.elen[i]; cur.c = mergeConn(cur.c, c); } else shared.set(key, { L: g.elen[i], c });
       }
-      const eu = new Int32Array(shared.size), ev = new Int32Array(shared.size), elen = new Float64Array(shared.size);
+      const eu = new Int32Array(shared.size), ev = new Int32Array(shared.size), elen = new Float64Array(shared.size), econn = new Uint8Array(shared.size);
       let i = 0;
-      for (const [key, L] of shared) { eu[i] = Math.floor(key / m); ev[i] = key % m; elen[i] = L; i++; }
-      return { graph: buildGraph({ n: m, pop, dem, rep, area, ext, county, eu, ev, elen }), groupOf };
+      for (const [key, o] of shared) { eu[i] = Math.floor(key / m); ev[i] = key % m; elen[i] = o.L; econn[i] = o.c; i++; }
+      return { graph: buildGraph({ n: m, pop, dem, rep, area, ext, county, eu, ev, elen, econn }), groupOf };
     }
 
+    // a land border beats a water link, which beats a shape-only border
+    function mergeConn(a, b) { return a === 1 || b === 1 ? 1 : a === 2 || b === 2 ? 2 : 0; }
     const FOUR_PI = 4 * Math.PI;
     const SEARCH_CAP = 1000; // max units explored when checking a flip keeps a district connected
 
     // ---------- engine ----------
     function createEngine(g, opts) {
-      const { n, E, eu, ev, start, nbr, nlen, border, pop, dem, rep, area, county } = g;
+      const { n, E, eu, ev, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county } = g;
       const k = opts.k | 0;
       if (k < 1 || k > n) throw new Error("Can't make " + k + " districts from " + n + " units.");
       const rand = opts.rand || makeRng(opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed);
@@ -153,6 +161,19 @@
       const cPresent = new Int32Array(nc); // districts touching county c
       let splits = 0, compSum = 0, penSum = 0, partE = 0;
       let cntSafeD = 0, cntSafeR = 0, cntComp = 0, cntWinD = 0;
+      // Gerrymander tiers (max modes), from the favored party's side, in margin
+      // points: safe (>= floor), any win, toss-up (losing by < 5), lean (losing by < 15).
+      // The search maximizes each tier in turn, locking the ones before it.
+      const isMax = mode === "maxD" || mode === "maxR";
+      const floorPts = opts.margin || 0;
+      const tierMargins = isMax ? (floorPts > 0 ? [floorPts, 0, -5, -15] : [0, -5, -15]) : [];
+      const tierTh = tierMargins.map((m) => 0.5 + m / 200 + (m === 0 ? 1e-9 : 0));
+      const nTier = tierTh.length;
+      const cntTier = new Int32Array(nTier), dTier = new Uint8Array(k), tierLock = new Int32Array(nTier).fill(-1);
+      let tierIdx = 0;
+      function pshare(s) { return mode === "maxR" ? 1 - s : s; }
+      function tierBits(s) { const p = pshare(s); let b = 0; for (let j = 0; j < nTier; j++) if (p >= tierTh[j]) b |= 1 << j; return b; }
+      function addTier(b, sgn) { for (let j = 0; j < nTier; j++) if (b & (1 << j)) cntTier[j] += sgn; }
 
       // scratch buffers
       const loc = new Int32Array(n).fill(-1);
@@ -194,6 +215,7 @@
         compSum -= dInv[d]; dInv[d] = invPP(dArea[d], dPerim[d]); compSum += dInv[d];
         penSum -= dPen[d]; dPen[d] = popPen(dPop[d]); penSum += dPen[d];
         addCls(dCls[d], -1); shares[d] = share(d); dCls[d] = cls(shares[d]); addCls(dCls[d], 1);
+        if (nTier) { addTier(dTier[d], -1); dTier[d] = tierBits(shares[d]); addTier(dTier[d], 1); }
       }
       function recomputePen() { penSum = 0; for (let d = 0; d < k; d++) { dPen[d] = popPen(dPop[d]); penSum += dPen[d]; } }
       // every district within the population tolerance?
@@ -213,10 +235,12 @@
         splits = 0;
         for (let c = 0; c < nc; c++) if (cPresent[c] > 1) splits += cPresent[c] - 1;
         compSum = 0; penSum = 0; cntSafeD = cntSafeR = cntComp = cntWinD = 0;
+        cntTier.fill(0);
         for (let d = 0; d < k; d++) {
           dInv[d] = invPP(dArea[d], dPerim[d]); compSum += dInv[d];
           dPen[d] = popPen(dPop[d]); penSum += dPen[d];
           shares[d] = share(d); dCls[d] = cls(shares[d]); addCls(dCls[d], 1);
+          if (nTier) { dTier[d] = tierBits(shares[d]); addTier(dTier[d], 1); }
         }
         partE = partisanE();
       }
@@ -226,6 +250,15 @@
         if (mode === "competitive") {
           let e = 0;
           for (let d = 0; d < k; d++) { const x = Math.abs(2 * shares[d] - 1) - 2 * band; if (x > 0) e += x; }
+          return e * 100;
+        }
+        if (isMax) {
+          // the top `maxTarget` districts (by the party's share) should clear this tier's line
+          for (let d = 0; d < k; d++) sortBuf[d] = pshare(shares[d]);
+          sortBuf.sort();
+          const th = tierTh[tierIdx], need = Math.min(k, maxTarget);
+          let e = 0;
+          for (let i = k - need; i < k; i++) { const x = th - sortBuf[i]; if (x > 0) e += x; }
           return e * 100;
         }
         sortBuf.set(shares); sortBuf.sort(); // ascending: weakest Dem districts first
@@ -256,6 +289,7 @@
 
       function lockOk() {
         if (!lock) return true;
+        if (lock.tiers) { for (let j = 0; j < nTier; j++) if (lock.tiers[j] >= 0 && cntTier[j] < lock.tiers[j]) return false; return true; }
         if (mode === "competitive") return cntComp >= lock.comp;
         return cntSafeD >= lock.safeD && cntSafeR >= lock.safeR;
       }
@@ -265,7 +299,7 @@
       function randomCutEdge() {
         for (let t = 0; t < 20000; t++) {
           const e = (rand() * E) | 0;
-          if (assign[eu[e]] !== assign[ev[e]]) return e;
+          if (econn[e] && assign[eu[e]] !== assign[ev[e]]) return e;
         }
         return -1;
       }
@@ -315,6 +349,7 @@
         for (let i = 0; i < m; i++) {
           const x = nodes[i];
           for (let j = start[x]; j < start[x + 1]; j++) {
+            if (!nconn[j]) continue;
             const l2 = loc[nbr[j]];
             if (l2 > i) { la[le] = i; lb[le] = l2; lw[le] = nlen[j]; le++; }
           }
@@ -386,7 +421,7 @@
               const x = queue[qh++]; p += pop[x] + 1e-6;
               for (let j = start[x]; j < start[x + 1]; j++) {
                 const y = nbr[j];
-                if (comp[y] < 0 && assign[y] === d) { comp[y] = c; queue[qt++] = y; }
+                if (nconn[j] && comp[y] < 0 && assign[y] === d) { comp[y] = c; queue[qt++] = y; }
               }
             }
             compPop.push(p); compDist.push(d); compSize.push(qt);
@@ -405,7 +440,7 @@
             if (main[compDist[c]] === c) continue;
             for (let j = start[u]; j < start[u + 1]; j++) {
               const y = nbr[j], dy = assign[y];
-              if (dy === compDist[c]) continue;
+              if (!nconn[j] || dy === compDist[c]) continue;
               const key = c * k + dy;
               const L = (acc.get(key) || 0) + nlen[j] + 1e-3;
               acc.set(key, L);
@@ -432,7 +467,7 @@
           const x = nodes[qi];
           for (let j = start[x]; j < start[x + 1]; j++) {
             const y = nbr[j];
-            if (loc[y] < 0 && (assign[y] === A || assign[y] === B)) { loc[y] = m; nodes[m++] = y; }
+            if (nconn[j] && loc[y] < 0 && (assign[y] === A || assign[y] === B)) { loc[y] = m; nodes[m++] = y; }
           }
         }
         const le = localEdges(m);
@@ -468,8 +503,13 @@
           if (side[i]) { p1v += pop[x]; d1 += dem[x]; r1 += rep[x]; a1 += area[x]; per1 += border[x]; c1++; }
           else { p0v += pop[x]; d0 += dem[x]; r0 += rep[x]; a0 += area[x]; per0 += border[x]; c0++; }
         }
-        for (let i = 0; i < le; i++) {
-          if (side[la[i]] === side[lb[i]]) { if (side[la[i]]) per1 -= 2 * lw[i]; else per0 -= 2 * lw[i]; }
+        // borders inside each half (all borders, including shape-only ones; each seen from both ends)
+        for (let i = 0; i < m; i++) {
+          const x = nodes[i];
+          for (let j = start[x]; j < start[x + 1]; j++) {
+            const l2 = loc[nbr[j]];
+            if (l2 >= 0 && side[l2] === side[i]) { if (side[i]) per1 -= nlen[j]; else per0 -= nlen[j]; }
+          }
         }
         const saved = save(A, B);
         let nch = 0;
@@ -505,7 +545,7 @@
       function save(A, B) {
         return [dPop[A], dDem[A], dRep[A], dArea[A], dPerim[A], dCnt[A], dPop[B], dDem[B], dRep[B], dArea[B], dPerim[B], dCnt[B],
           dInv[A], dPen[A], dCls[A], shares[A], dInv[B], dPen[B], dCls[B], shares[B], compSum, penSum, splits, partE,
-          cntSafeD, cntSafeR, cntComp, cntWinD];
+          cntSafeD, cntSafeR, cntComp, cntWinD, dTier[A], dTier[B]].concat(Array.from(cntTier));
       }
       function restoreSaved(A, B, s) {
         dPop[A] = s[0]; dDem[A] = s[1]; dRep[A] = s[2]; dArea[A] = s[3]; dPerim[A] = s[4]; dCnt[A] = s[5];
@@ -514,6 +554,8 @@
         dInv[B] = s[16]; dPen[B] = s[17]; dCls[B] = s[18]; shares[B] = s[19];
         compSum = s[20]; penSum = s[21]; splits = s[22]; partE = s[23];
         cntSafeD = s[24]; cntSafeR = s[25]; cntComp = s[26]; cntWinD = s[27];
+        dTier[A] = s[28]; dTier[B] = s[29];
+        for (let j = 0; j < nTier; j++) cntTier[j] = s[30 + j];
       }
       // stats of A and B already updated; decide, and roll back if rejected
       function tryAccept(A, B, saved) {
@@ -561,7 +603,7 @@
         stampId++;
         for (let j = start[u]; j < start[u + 1]; j++) {
           const y = nbr[j];
-          if (assign[y] === A && stamp[y] !== stampId) { stamp[y] = stampId; targets++; if (first < 0) first = y; }
+          if (nconn[j] && assign[y] === A && stamp[y] !== stampId) { stamp[y] = stampId; targets++; if (first < 0) first = y; }
         }
         if (targets <= 1) return targets === 1;
         const tgt = stampId; stampId++;
@@ -571,7 +613,7 @@
           const x = queue[qh++];
           for (let j = start[x]; j < start[x + 1]; j++) {
             const y = nbr[j];
-            if (assign[y] !== A || stamp[y] === stampId) continue;
+            if (!nconn[j] || assign[y] !== A || stamp[y] === stampId) continue;
             if (stamp[y] === tgt) { found++; if (found === targets) return true; }
             stamp[y] = stampId; queue[qt++] = y;
           }
@@ -609,13 +651,14 @@
           wPart = 1; wComp = compact ? tune.searchComp : 0; wCty = wCounty * tune.searchComp; T0 = tune.searchT0; T1 = tune.searchT1;
           phaseBudget = searchBudget; recomProb = tune.searchRecom;
           lock = null;
+          if (isMax) { tierIdx = 0; tierLock.fill(-1); lock = { tiers: tierLock }; }
         } else if (p === "polish") {
           wPart = 0; wComp = 1; wCty = wCounty;
           T0 = tune.polishT0; T1 = tune.polishT1; phaseBudget = polishBudget; recomProb = tune.polishRecom;
-          if (!lock && mode !== "neutral") lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+          if (!lock && mode !== "neutral") lock = currentLock();
         } else if (p === "final") {
           wPart = 0; wComp = compact ? 1 : 0; wCty = wCounty;
-          if (!lock && mode !== "neutral") lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+          if (!lock && mode !== "neutral") lock = currentLock();
           T0 = T1 = 1e-4; phaseBudget = Math.max(30000, 4 * n, 2000 * k); recomProb = 0;
         }
         recomputePen();
@@ -637,14 +680,18 @@
         if (phase === "polish" && best) restore(best.assign);
         phase = "done";
       }
+      function currentLock() {
+        return isMax ? { tiers: Array.from(cntTier) } : { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+      }
       function startNextTarget(first) {
         if (first) {
-          // the starting map is the fallback if the next seat can't be reached
-          const have = mode === "maxD" ? cntSafeD : cntSafeR;
-          if (have > 0) { bestAchievedT = have; bestAchievedAssign = Int32Array.from(assign); }
+          // the map at the start of this tier is the fallback if the next seat can't be reached
+          bestAchievedT = cntTier[tierIdx];
+          if (!bestAchievedAssign) bestAchievedAssign = new Int32Array(n);
+          bestAchievedAssign.set(assign);
         }
-        if (mode === "maxD") { maxTarget = first ? cntSafeD + 1 : maxTarget + 1; needD = Math.min(k, maxTarget); needR = 0; }
-        else { maxTarget = first ? cntSafeR + 1 : maxTarget + 1; needR = Math.min(k, maxTarget); needD = 0; }
+        maxTarget = first ? cntTier[tierIdx] + 1 : maxTarget + 1;
+        if (mode === "maxD") { needD = Math.min(k, maxTarget); needR = 0; } else { needR = Math.min(k, maxTarget); needD = 0; }
         targetSteps = 0; phaseStep = 0;
         partE = partisanE();
         curE = energy();
@@ -659,7 +706,7 @@
           initialPlan();
         }
         recomputeAll();
-        if (opts.lockFromStart && mode !== "neutral") lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+        if (opts.lockFromStart && mode !== "neutral") lock = currentLock();
         if (mode === "neutral" && !opts.goal) goal = { achieved: true, text: compact ? "No partisan goal: equal-population, compact districts" : "No partisan goal: equal-population districts, shapes left as they fall" };
         if (worstDev() > userTol) enterPhase("balance");
         else nextPhase();
@@ -683,18 +730,19 @@
           }
         } else if (phase === "search") {
           searchTotal++;
-          if (mode === "maxD" || mode === "maxR") {
+          if (isMax) {
             targetSteps++;
+            const patience = tierIdx === 0 ? phaseBudget : phaseBudget / 2;
             if (partE === 0) {
               bestAchievedT = maxTarget;
-              if (!bestAchievedAssign) bestAchievedAssign = new Int32Array(n);
               bestAchievedAssign.set(assign);
-              if (maxTarget >= k) { finishSearch(true); return; }
+              if (maxTarget >= k) { nextTier(); return; }
               startNextTarget(false);
               T = T0 * 0.5;
-            } else if (targetSteps >= phaseBudget || searchTotal >= phaseBudget * 4) {
-              if (bestAchievedAssign) restore(bestAchievedAssign);
-              finishSearch(bestAchievedAssign != null);
+            } else if (targetSteps >= patience || searchTotal >= phaseBudget * (4 + 2 * nTier)) {
+              restore(bestAchievedAssign);
+              if (searchTotal >= phaseBudget * (4 + 2 * nTier)) { for (let j = tierIdx; j < nTier; j++) tierLock[j] = cntTier[j]; finishSearch(true); return; }
+              nextTier();
             }
             return;
           }
@@ -721,10 +769,26 @@
         }
       }
 
+      // lock this tier's count and move on to the next tier
+      function nextTier() {
+        tierLock[tierIdx] = cntTier[tierIdx];
+        tierIdx++;
+        if (tierIdx >= nTier) { tierIdx = nTier - 1; finishSearch(true); return; }
+        startNextTarget(true);
+      }
+      function tierText() {
+        const other = mode === "maxD" ? "R" : "D";
+        const by = (j) => cntTier[j] - (j ? cntTier[j - 1] : 0);
+        const parts = [];
+        const j = floorPts > 0 ? 1 : 0;
+        if (j) parts.push(by(1) + " narrower win" + (by(1) === 1 ? "" : "s"));
+        parts.push(by(j + 1) + " toss-up" + (by(j + 1) === 1 ? "" : "s") + " (losing by <5)");
+        parts.push(by(j + 2) + " leaning " + other + " (losing by <15)");
+        return parts.join(", ");
+      }
       function finishSearch(achieved) {
         const margin = h > 0 ? " by " + (h * 200).toFixed(0) + "+ points" : "";
-        if (mode === "maxD") goal = { achieved: bestAchievedT > 0, text: "Most Democratic seats found: " + cntSafeD + " of " + k + (margin ? " (won" + margin + ")" : "") };
-        else if (mode === "maxR") goal = { achieved: bestAchievedT > 0, text: "Most Republican seats found: " + cntSafeR + " of " + k + (margin ? " (won" + margin + ")" : "") };
+        if (isMax) goal = { achieved: cntTier[0] > 0, text: "Most " + (mode === "maxD" ? "Democratic" : "Republican") + " seats found: " + cntTier[0] + " of " + k + (margin ? " won" + margin : "") + ". Below that: " + tierText() + "." };
         else if (mode === "competitive") goal = { achieved: true, text: cntComp + " of " + k + " districts within " + (band * 200).toFixed(0) + " points" };
         else {
           const want = needD + " D / " + needR + " R" + margin;
@@ -749,8 +813,8 @@
             const x = queue[qh++];
             for (let j = start[x]; j < start[x + 1]; j++) {
               const y = nbr[j];
-              if (assign[y] !== d) continue;
-              if (nlen[j] === 0) usesBridge[d] = 1;
+              if (!nconn[j] || assign[y] !== d) continue;
+              if (nconn[j] === 2) usesBridge[d] = 1;
               if (!seen[y]) { seen[y] = 1; queue[qt++] = y; }
             }
           }
@@ -788,6 +852,7 @@
         return {
           phase, step: stepCount, k, ideal, tol, userTol, stateShare, unitName,
           seats: outcome(), districts, maxDev, minPop, maxPop, meanPP: ppSum / k,
+          tiers: isMax ? tierMargins.map((m, j) => ({ margin: m, count: cntTier[j] })) : null,
           efficiencyGap: (wastedD - wastedR) / votes, // >0 means Dem votes are wasted more (map favors R)
           meanMedian: median - mean,                  // <0 means map favors R
           splitCounties: countyOn ? splitCounties : null, countySplits: splits,
@@ -801,8 +866,11 @@
       }
       function progressGoal() {
         if (phase !== "search") return { achieved: false, text: phase === "balance" ? "Balancing population" : goal.text };
-        if (mode === "maxD") return { achieved: false, text: "Trying for " + needD + " Democratic seats" };
-        if (mode === "maxR") return { achieved: false, text: "Trying for " + needR + " Republican seats" };
+        if (isMax) {
+          const party = mode === "maxD" ? "Democratic" : "Republican", m = tierMargins[tierIdx], need = Math.min(k, maxTarget);
+          const what = m > 0 ? party + " seats won by " + m + "+" : m === 0 ? party + " wins" : "districts within " + -m + " points of a " + party + " win";
+          return { achieved: false, text: (tierIdx ? "Locked in the tiers above; now trying for " : "Trying for ") + need + " " + what };
+        }
         if (mode === "competitive") return { achieved: false, text: "Making districts competitive" };
         return { achieved: false, text: "Aiming for " + needD + " D / " + needR + " R" };
       }
@@ -926,21 +994,96 @@
 
     // Decoded state arrays -> engine input. Block votes are the precinct's
     // 2024 votes split by each block's weight (voting-age population).
+    //
+    // Districts may only connect over land: water blocks (no land area) are left
+    // out of the graph, and land cut off by water (islands etc.) is joined only by
+    // the links in meta.landBridges. Each water block is attached to a nearby land
+    // block (`attach`) so it can be shown and exported with that block's district.
     function prepareGraph(meta, A) {
       const n = meta.n, np = meta.precincts.id.length;
+      const water = A.water || new Uint8Array(n);
       const wsum = new Float64Array(np);
       for (let u = 0; u < n; u++) wsum[A.precinct[u]] += A.weight[u];
-      const dem = new Float64Array(n), rep = new Float64Array(n), area = new Float64Array(n);
+      const bdem = new Float64Array(n), brep = new Float64Array(n);
       for (let u = 0; u < n; u++) {
         const p = A.precinct[u], f = wsum[p] > 0 ? A.weight[u] / wsum[p] : 0;
-        dem[u] = meta.precincts.dem[p] * f; rep[u] = meta.precincts.rep[p] * f; area[u] = A.area[u] * 100;
+        bdem[u] = meta.precincts.dem[p] * f; brep[u] = meta.precincts.rep[p] * f;
       }
       const x = meta.extraVotes;
-      if (x) for (let i = 0; i < x.block.length; i++) { dem[x.block[i]] += x.dem[i]; rep[x.block[i]] += x.rep[i]; }
-      const E = meta.nEdges, eu = new Int32Array(E), ev = new Int32Array(E);
+      if (x) for (let i = 0; i < x.block.length; i++) { bdem[x.block[i]] += x.dem[i]; brep[x.block[i]] += x.rep[i]; }
+      // all block edges
+      const E = meta.nEdges, au = new Int32Array(E), av = new Int32Array(E);
       let e = 0;
-      for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) { eu[e] = u; ev[e] = u + A.dv[e]; }
-      return { n, pop: A.pop, dem, rep, area, ext: A.ext, county: A.county, eu, ev, elen: A.elen, group: A.precinct };
+      for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) { au[e] = u; av[e] = u + A.dv[e]; }
+      // land index
+      const landOf = new Int32Array(n).fill(-1);
+      let nl = 0;
+      for (let u = 0; u < n; u++) if (!water[u]) landOf[u] = nl++;
+      const landIds = new Int32Array(nl);
+      for (let u = 0; u < n; u++) if (landOf[u] >= 0) landIds[landOf[u]] = u;
+      // attach water blocks to land: breadth-first out from the shore
+      const attach = Int32Array.from(landOf);
+      const deg = new Int32Array(n);
+      for (let i = 0; i < E; i++) { deg[au[i]]++; deg[av[i]]++; }
+      const st = new Int32Array(n + 1);
+      for (let u = 0; u < n; u++) st[u + 1] = st[u] + deg[u];
+      const adj = new Int32Array(2 * E), fill = st.slice(0, n);
+      for (let i = 0; i < E; i++) { adj[fill[au[i]]++] = av[i]; adj[fill[av[i]]++] = au[i]; }
+      const q = new Int32Array(n);
+      let qh = 0, qt = 0;
+      for (let u = 0; u < n; u++) if (landOf[u] >= 0) q[qt++] = u;
+      while (qh < qt) {
+        const u = q[qh++];
+        for (let j = st[u]; j < st[u + 1]; j++) { const w = adj[j]; if (attach[w] < 0) { attach[w] = attach[u]; q[qt++] = w; } }
+      }
+      for (let u = 0; u < n; u++) if (attach[u] < 0) attach[u] = 0;
+      // Each land unit's shape includes the water attached to it, so compactness
+      // still sees coastlines and bays; only contiguity ignores water.
+      const pop = new Float64Array(nl), dem = new Float64Array(nl), rep = new Float64Array(nl), area = new Float64Array(nl);
+      const ext = new Float64Array(nl), county = new Int32Array(nl), group = new Int32Array(nl);
+      for (let u = 0; u < n; u++) {
+        const l = attach[u];
+        dem[l] += bdem[u]; rep[l] += brep[u]; pop[l] += A.pop[u];
+        area[l] += A.area[u] * 100; ext[l] += A.ext[u];
+        if (landOf[u] >= 0) { county[l] = A.county[u]; group[l] = A.precinct[u]; }
+      }
+      const pairs = new Map(), lu = [], lv = [], ll = [], lc = [];
+      function addEdge(a, b, len, c) {
+        if (a === b) return;
+        const key = a < b ? a * nl + b : b * nl + a;
+        const i = pairs.get(key);
+        if (i === undefined) { pairs.set(key, lu.length); lu.push(Math.min(a, b)); lv.push(Math.max(a, b)); ll.push(len); lc.push(c); }
+        else { ll[i] += len; lc[i] = mergeConn(lc[i], c); }
+      }
+      for (let i = 0; i < E; i++) {
+        const land = landOf[au[i]] >= 0 && landOf[av[i]] >= 0;
+        addEdge(attach[au[i]], attach[av[i]], A.elen[i], land ? (A.elen[i] > 0 ? 1 : 2) : 0);
+      }
+      const br = meta.landBridges || [];
+      for (let i = 0; i < br.length; i += 2) {
+        const a = landOf[br[i]], b = landOf[br[i + 1]];
+        if (a >= 0 && b >= 0) addEdge(a, b, 0, 2);
+      }
+      // Precinct-stage units: each precinct's land-connected pieces (a precinct
+      // split by a river becomes two units), so precinct maps stay contiguous on land.
+      const uf = new Int32Array(nl);
+      for (let i = 0; i < nl; i++) uf[i] = i;
+      const find = (v) => { while (uf[v] !== v) { uf[v] = uf[uf[v]]; v = uf[v]; } return v; };
+      for (let i = 0; i < lu.length; i++) if (lc[i] === 1 && group[lu[i]] === group[lv[i]]) { const ra = find(lu[i]), rb = find(lv[i]); if (ra !== rb) uf[ra] = rb; }
+      const piece = new Int32Array(nl);
+      for (let i = 0; i < nl; i++) piece[i] = find(i);
+      return {
+        n: nl, pop, dem, rep, area, ext, county, group: piece, precinct: group,
+        eu: Int32Array.from(lu), ev: Int32Array.from(lv), elen: Float64Array.from(ll), econn: Uint8Array.from(lc),
+        landIds, landOf, attach, blocks: n,
+      };
+    }
+
+    // land-graph assignment -> one district per census block (water follows its land)
+    function expandAssign(graph, landAssign, out) {
+      const a = out || new Int32Array(graph.blocks);
+      for (let u = 0; u < graph.blocks; u++) a[u] = landAssign[graph.attach[u]];
+      return a;
     }
 
     // ---------- superthinking: run the whole pipeline in cycles, forever ----------
@@ -965,13 +1108,12 @@
       // higher is better, compared left to right
       function score(r) {
         const valid = r.contiguity && r.contiguity.ok && r.maxDev <= tol + 1e-9 ? 1 : 0;
-        let primary = 0;
-        if (mode === "maxD") primary = r.seats.safeD;
-        else if (mode === "maxR") primary = r.seats.safeR;
-        else if (mode === "competitive") primary = r.seats.comp;
-        else if (mode === "target" || mode === "proportional") primary = -deficit(r);
+        let primary = [0];
+        if (r.tiers) primary = r.tiers.map((t) => t.count); // safe seats first, then each tier below
+        else if (mode === "competitive") primary = [r.seats.comp];
+        else if (mode === "target" || mode === "proportional") primary = [-deficit(r)];
         const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9), 0) : -r.maxDev;
-        return valid ? [1, primary, shape] : [0, -r.maxDev, primary];
+        return valid ? [1].concat(primary, [shape]) : [0, -r.maxDev].concat(primary);
       }
       function better(a, b) {
         for (let i = 0; i < a.length; i++) { if (a[i] > b[i] + 1e-12) return true; if (a[i] < b[i] - 1e-12) return false; }
@@ -1034,7 +1176,7 @@
       };
     }
 
-    return { makeRng, buildGraph, aggregate, createEngine, createPipeline, createEndless, prepareGraph };
+    return { makeRng, buildGraph, aggregate, createEngine, createPipeline, createEndless, prepareGraph, expandAssign };
   }
 
   // Web Worker entry point. Stringified and run from a Blob URL, so it works from file:// too.

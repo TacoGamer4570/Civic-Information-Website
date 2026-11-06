@@ -215,6 +215,51 @@ def connect_components(n, u, v, px, py):
         bridges.append((min(a, b), max(a, b)))
 
 
+def land_bridges(n, u, v, water, px, py):
+    """Districts may only connect over land. Pieces of land cut off by water
+    (islands, Michigan's Upper Peninsula, Virginia's Eastern Shore...) get one
+    link each to the nearest land outside them. Returns flat [a, b, a, b, ...]."""
+    import scipy.sparse as sp
+    import scipy.sparse.csgraph as cg
+    from scipy.spatial import cKDTree
+    land = np.flatnonzero(water == 0)
+    m = (water[u] == 0) & (water[v] == 0)
+    lu, lv = u[m], v[m]
+    bridges = []
+    pts = np.c_[px, py]
+    while True:
+        bu = np.array([b[0] for b in bridges], dtype=np.int64)
+        bv = np.array([b[1] for b in bridges], dtype=np.int64)
+        A = sp.coo_matrix((np.ones(len(lu) + len(bu)), (np.r_[lu, bu], np.r_[lv, bv])), shape=(n, n)).tocsr()
+        sub = A[land][:, land]
+        nc, lab = cg.connected_components(sub, directed=False)
+        if nc == 1:
+            break
+        sizes = np.bincount(lab)
+        main = int(np.argmax(sizes))
+        tree = cKDTree(pts[land])
+        added = set()
+        for c in np.argsort(sizes):
+            if c == main:
+                continue
+            mem = np.flatnonzero(lab == c)
+            kq = min(len(land), 64)
+            d, j = tree.query(pts[land[mem]], k=kq)
+            d = np.where(lab[j] != c, d, np.inf)
+            if not np.isfinite(d).any():
+                oth = np.flatnonzero(lab != c)
+                d2, j2 = cKDTree(pts[land[oth]]).query(pts[land[mem]])
+                i = int(np.argmin(d2)); a, b = land[mem[i]], land[oth[j2[i]]]
+            else:
+                i, jj = np.unravel_index(np.argmin(d), d.shape)
+                a, b = land[mem[i]], land[j[i, jj]]
+            key = (min(a, b), max(a, b))
+            if key not in added:
+                added.add(key)
+                bridges.append((int(key[0]), int(key[1])))
+    return [x for b in bridges for x in b]
+
+
 # ---------------------------------------------------------------- output
 def pack(arr):
     return base64.b64encode(zlib.compress(np.ascontiguousarray(arr).tobytes(), 9)).decode()
@@ -361,6 +406,8 @@ def build(st, cache):
             "dem": pdem.astype(int).tolist(),
             "rep": prep.astype(int).tolist(),
         },
+        # land-only contiguity: links for land cut off by water [a, b, a, b, ...]
+        "landBridges": land_bridges(n, allu, allv, (blocks.ALAND20.values == 0).astype(np.int8), np.asarray(px), np.asarray(py)),
         # votes of precincts with no block center, added to one nearby block
         "extraVotes": {"block": [int(x) for x in xb], "dem": xd, "rep": xr},
         # deflated little-endian typed arrays, base64. Block votes are

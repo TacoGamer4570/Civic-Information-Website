@@ -205,3 +205,10 @@
 .rd-live { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .rd-live[hidden] { display: none; }
 .rd-live input { width: 18px; height: 18px; accent-color: var(--ink); }
+
+/* gerrymander tiers tile */
+.rd-tile-wide { grid-column: span 2; }
+@media (max-width: 520px) { .rd-tile-wide { grid-column: auto; } }
+.rd-tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 6px; font-size: .8rem; font-weight: 500; letter-spacing: 0; margin: 4px 0; }
+.rd-tier { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 8px; background: var(--soft); }
+.rd-tier strong { font-size: 1.3rem; line-height: 1; }
