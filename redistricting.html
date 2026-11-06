@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redistricting Simulator — ballot/decoded</title>
+  <meta name="description" content="Draw congressional maps for Texas, California, or Pennsylvania with a Markov chain Monte Carlo algorithm, using real precincts, 2024 presidential results, and 2020 Census population. Fair, proportional, or gerrymandered: you pick.">
+  <meta name="theme-color" content="#FFF7EA">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='14' fill='%23D4FF3F' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='%23141414' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/redistrict.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <a class="logo" href="index.html" aria-label="ballot/decoded home">
+      <span class="logo-mark" aria-hidden="true">✓</span>
+      <span class="logo-text">ballot<span class="slash">/</span>decoded</span>
+      <span class="sticker sticker-sm">2027</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a class="link-btn" href="index.html">voter guide</a>
+      <button type="button" class="link-btn" data-open="rd-method">how it works</button>
+    </nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="rd-hero">
+      <p class="eyebrow"><span class="sticker sticker-tilt">MCMC</span> <span class="mono small">real precincts · 2024 presidential results · 2020 Census</span></p>
+      <h1>redistricting <span class="serif">simulator</span></h1>
+      <p class="lede">Pick a state and a goal. A Markov chain Monte Carlo algorithm reshapes the congressional map one move at a time, balancing population first, then chasing your partisan target, then making the districts as compact as it can. Every district is checked for contiguity.</p>
+    </section>
+
+    <div class="rd-layout">
+      <form class="card rd-panel" id="rd-form" autocomplete="off">
+        <fieldset class="rd-field">
+          <legend>State</legend>
+          <div class="rd-seg" role="radiogroup" id="rd-state">
+            <label><input type="radio" name="state" value="TX" checked><span>Texas<small>38 seats</small></span></label>
+            <label><input type="radio" name="state" value="CA"><span>California<small>52 seats</small></span></label>
+            <label><input type="radio" name="state" value="PA"><span>Pennsylvania<small>17 seats</small></span></label>
+          </div>
+          <p class="rd-statline mono small" id="rd-statline">Loading precincts…</p>
+        </fieldset>
+
+        <div class="rd-field">
+          <label class="rd-label" for="rd-k">Number of districts</label>
+          <div class="rd-inline">
+            <input type="number" id="rd-k" min="2" max="80" value="38" inputmode="numeric">
+            <button type="button" class="link-btn small" id="rd-k-reset">use real count</button>
+          </div>
+          <p class="hint small muted" id="rd-k-hint"></p>
+        </div>
+
+        <fieldset class="rd-field">
+          <legend>Goal</legend>
+          <div class="rd-goals" id="rd-goals">
+            <label class="rd-goal"><input type="radio" name="mode" value="neutral" checked><span><strong>Fair &amp; compact</strong><small>No partisan target. Equal population, tight shapes.</small></span></label>
+            <label class="rd-goal"><input type="radio" name="mode" value="proportional"><span><strong>Proportional</strong><small>Seats match each party's share of the statewide vote.</small></span></label>
+            <label class="rd-goal"><input type="radio" name="mode" value="target"><span><strong>Exact seat split</strong><small>You choose how many seats each party wins.</small></span></label>
+            <label class="rd-goal"><input type="radio" name="mode" value="maxD"><span><strong>Gerrymander for Democrats</strong><small>As many Democratic seats as possible.</small></span></label>
+            <label class="rd-goal"><input type="radio" name="mode" value="maxR"><span><strong>Gerrymander for Republicans</strong><small>As many Republican seats as possible.</small></span></label>
+            <label class="rd-goal"><input type="radio" name="mode" value="competitive"><span><strong>Competitive</strong><small>As many toss-up districts as possible.</small></span></label>
+          </div>
+        </fieldset>
+
+        <div class="rd-field" id="rd-target-field" hidden>
+          <label class="rd-label" for="rd-target">Democratic seats <span class="muted" id="rd-target-of"></span></label>
+          <div class="rd-range">
+            <input type="range" id="rd-target" min="0" max="38" value="16">
+            <output id="rd-target-out" class="mono">16 D – 22 R</output>
+          </div>
+        </div>
+
+        <div class="rd-field" id="rd-margin-field" hidden>
+          <label class="rd-label" for="rd-margin" id="rd-margin-label">Safe-seat margin</label>
+          <div class="rd-range">
+            <input type="range" id="rd-margin" min="0" max="20" step="1" value="3">
+            <output id="rd-margin-out" class="mono">3 pts</output>
+          </div>
+          <p class="hint small muted" id="rd-margin-hint">A seat only counts if the winner leads by at least this much in the 2024 presidential vote.</p>
+        </div>
+
+        <details class="rd-more">
+          <summary>More settings</summary>
+          <div class="rd-field">
+            <label class="rd-label" for="rd-tol">Population tolerance</label>
+            <select id="rd-tol">
+              <option value="0.0025">±0.25% (very strict)</option>
+              <option value="0.005" selected>±0.5%</option>
+              <option value="0.01">±1%</option>
+              <option value="0.02">±2%</option>
+              <option value="0.05">±5% (state-legislative style)</option>
+            </select>
+            <p class="hint small muted">Real congressional maps balance to the person using census blocks. Whole precincts can usually get within ±0.5%.</p>
+          </div>
+          <div class="rd-field">
+            <label class="rd-label" for="rd-county">Keep counties whole</label>
+            <select id="rd-county">
+              <option value="0">Don't care</option>
+              <option value="0.3" selected>Somewhat</option>
+              <option value="1.5">Strongly</option>
+            </select>
+          </div>
+          <div class="rd-field">
+            <label class="rd-label" for="rd-effort">Effort</label>
+            <select id="rd-effort">
+              <option value="quick">Quick (seconds)</option>
+              <option value="standard" selected>Standard (under a minute)</option>
+              <option value="thorough">Thorough (a few minutes)</option>
+            </select>
+          </div>
+          <div class="rd-field">
+            <label class="rd-label" for="rd-seed">Random seed</label>
+            <div class="rd-inline">
+              <input type="text" id="rd-seed" placeholder="random" inputmode="numeric">
+              <button type="button" class="link-btn small" id="rd-seed-clear">random</button>
+            </div>
+            <p class="hint small muted">Same seed + same settings = same map.</p>
+          </div>
+        </details>
+
+        <div class="rd-actions">
+          <button type="submit" class="btn btn-primary btn-lg" id="rd-run" disabled>Draw the map</button>
+          <div class="rd-actions-row">
+            <button type="button" class="btn btn-ghost" id="rd-pause" disabled>Pause</button>
+            <button type="button" class="btn btn-ghost" id="rd-skip" disabled title="Stop the current phase and move on">Skip phase</button>
+          </div>
+        </div>
+      </form>
+
+      <section class="rd-stage" aria-label="Map">
+        <div class="card rd-mapcard">
+          <div class="rd-toolbar">
+            <div class="rd-seg rd-seg-sm" role="radiogroup" aria-label="Color the map by" id="rd-color">
+              <label><input type="radio" name="color" value="lean" checked><span>District lean</span></label>
+              <label><input type="radio" name="color" value="district"><span>Districts</span></label>
+              <label><input type="radio" name="color" value="precinct"><span>Precinct results</span></label>
+            </div>
+            <div class="rd-zoom">
+              <button type="button" class="rd-icon-btn" id="rd-zoom-in" aria-label="Zoom in">+</button>
+              <button type="button" class="rd-icon-btn" id="rd-zoom-out" aria-label="Zoom out">−</button>
+              <button type="button" class="rd-icon-btn" id="rd-zoom-reset" aria-label="Reset view">⤢</button>
+            </div>
+          </div>
+          <div class="rd-mapwrap">
+            <canvas id="rd-map" aria-label="Map of precincts and districts" role="img"></canvas>
+            <div class="rd-tip" id="rd-tip" hidden></div>
+            <div class="rd-loading" id="rd-loading"><span class="mono">loading precincts…</span></div>
+          </div>
+          <div class="rd-legend small" id="rd-legend"></div>
+          <p class="rd-maphint mono small muted">scroll or pinch to zoom · drag to pan · hover a precinct for details</p>
+        </div>
+
+        <div class="card rd-status" id="rd-status" aria-live="polite">
+          <ol class="rd-phases" id="rd-phases">
+            <li data-phase="balance"><span class="rd-pn">1</span>Balance population</li>
+            <li data-phase="search"><span class="rd-pn">2</span>Hit the partisan goal</li>
+            <li data-phase="polish"><span class="rd-pn">3</span>Make it compact</li>
+            <li data-phase="done"><span class="rd-pn">✓</span>Verify</li>
+          </ol>
+          <div class="rd-progress"><span id="rd-progress-bar"></span></div>
+          <p class="rd-status-text" id="rd-status-text">Pick your settings and press <strong>Draw the map</strong>.</p>
+        </div>
+      </section>
+    </div>
+
+    <section class="rd-results" id="rd-results" hidden>
+      <div class="section-head">
+        <h2>the map, <span class="serif">by the numbers</span></h2>
+      </div>
+      <div class="rd-tiles" id="rd-tiles"></div>
+      <div class="card rd-chartcard">
+        <h3>District vote share <span class="muted small">2024 presidential, two-party, weakest to strongest Democratic district</span></h3>
+        <div class="rd-chart" id="rd-chart"></div>
+        <div class="rd-chart-legend small"><span><span class="rd-sw rd-sw-d"></span> Harris won</span><span><span class="rd-sw rd-sw-r"></span> Trump won</span><span><span class="rd-sw rd-sw-line"></span> statewide Harris share</span></div>
+      </div>
+      <div class="card rd-tablecard">
+        <div class="rd-tablehead">
+          <h3>Districts</h3>
+          <div class="rd-exports">
+            <button type="button" class="btn btn-ghost" id="rd-csv">Download assignments (CSV)</button>
+            <button type="button" class="btn btn-ghost" id="rd-png">Save map image</button>
+          </div>
+        </div>
+        <div class="rd-tablewrap">
+          <table class="rd-table" id="rd-table">
+            <thead>
+              <tr><th scope="col">District</th><th scope="col">Population</th><th scope="col">Deviation</th><th scope="col">Harris</th><th scope="col">Trump</th><th scope="col">Margin</th><th scope="col">Compactness</th><th scope="col">Precincts</th><th scope="col">Counties</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="small muted rd-notes" id="rd-notes"></p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p><strong>Data.</strong> 2024 presidential results by precinct from <a href="https://github.com/nytimes/presidential-precinct-map-2024" target="_blank" rel="noopener">The New York Times</a>. Population from the 2020 Census redistricting file (P.L. 94-171), with each census block assigned to the precinct it falls in.</p>
+      <p class="mono small">This is a simulator. Real maps must also follow the Voting Rights Act and state law, which this tool doesn't model.</p>
+    </div>
+  </footer>
+
+  <dialog id="rd-method" class="modal" aria-labelledby="rd-method-title">
+    <div class="modal-inner">
+      <button type="button" class="modal-close" data-close aria-label="Close">×</button>
+      <h2 id="rd-method-title">how the simulator works</h2>
+
+      <h3>The building blocks</h3>
+      <p>Each state is split into precincts (about 9,700 in Texas, 18,500 in California, and 9,100 in Pennsylvania). A district is a group of precincts. Each precinct carries three facts:</p>
+      <ul>
+        <li><strong>Population</strong> from the 2020 Census. Every census block is placed in the precinct that contains it.</li>
+        <li><strong>Votes</strong> for Harris and Trump in 2024.</li>
+        <li><strong>Neighbors</strong>: the precincts it shares a border with, and how long that border is. A few islands are linked to the nearest precinct across the water.</li>
+      </ul>
+
+      <h3>The algorithm (MCMC)</h3>
+      <p>It starts from a random map made by cutting random spanning trees into equal-population pieces. It then proposes thousands of small changes, two kinds at random:</p>
+      <ul>
+        <li><strong>ReCom</strong>: merge two neighboring districts, draw a random spanning tree over their precincts, and cut it into two equal-population halves. Both halves are connected by construction.</li>
+        <li><strong>Flip</strong>: move one precinct on a border into the next district. The move is only allowed if the district it leaves stays in one piece.</li>
+      </ul>
+      <p>Each change gets a score. Better changes are always kept. Worse ones are sometimes kept, more often early on, so the chain can escape dead ends (this is the Metropolis rule, used as simulated annealing).</p>
+
+      <h3>The three phases</h3>
+      <ol>
+        <li><strong>Balance population</strong> until every district is within your tolerance of the ideal size.</li>
+        <li><strong>Hit the partisan goal.</strong> The score measures how far the map is from the target seat split, counting a seat only if it's won by your safe margin. For "gerrymander" goals the target keeps rising until the chain can't reach the next seat.</li>
+        <li><strong>Make it compact.</strong> The seat result is locked in, and the chain minimizes total district "roundness" cost (Polsby–Popper: 1.0 is a circle, lower is more stretched), with a penalty for splitting counties if you asked for one.</li>
+      </ol>
+      <p>Last, every district is checked with a graph search to confirm it's one connected piece.</p>
+
+      <h3>What it can't do</h3>
+      <ul>
+        <li>Precincts aren't divisible, so population can't be balanced to the exact person the way real congressional maps are.</li>
+        <li>"Seats" here mean who carried the district in the 2024 presidential race. Real House races differ.</li>
+        <li>It doesn't model the Voting Rights Act, communities of interest, or incumbents.</li>
+        <li>Results vary run to run. That's the point of a random algorithm: try a few seeds.</li>
+      </ul>
+    </div>
+  </dialog>
+
+  <script src="js/redistrict/engine.js"></script>
+  <script src="js/redistrict/map.js"></script>
+  <script src="js/redistrict/app.js"></script>
+</body>
+</html>

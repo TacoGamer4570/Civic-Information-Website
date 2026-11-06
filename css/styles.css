@@ -113,6 +113,8 @@ h1:focus, h2:focus { outline: none; }
 .logo-mark { display: grid; place-items: center; width: 34px; height: 34px; border: var(--bw) solid var(--line); border-radius: 10px; background: var(--lime); color: var(--on-accent); font-weight: 700; box-shadow: 2px 2px 0 var(--shadow-c); }
 .logo-text { font-weight: 700; font-size: 1.15rem; letter-spacing: -0.03em; }
 .logo-text .slash { color: var(--orange); }
+.site-nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 14px; align-items: center; }
+.site-nav .link-btn { white-space: nowrap; }
 .link-btn { background: none; border: 0; padding: 4px 2px; cursor: pointer; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; font-weight: 500; }
 .link-btn:hover { background: var(--lime); color: var(--on-accent); }
 

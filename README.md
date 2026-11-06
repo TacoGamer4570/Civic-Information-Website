@@ -24,6 +24,7 @@ Then visit http://localhost:8000. It also works as-is on GitHub Pages: Settings 
 
 ```bash
 node tests/scoring.test.js
+node tests/redistrict.test.js
 ```
 
 Covers the scoring math, matching, share-link encoding, and data integrity (valid ranges, sources on every candidate, known question ids).
@@ -43,16 +44,50 @@ Covers the scoring math, matching, share-link encoding, and data integrity (vali
 
 Most fields aren't final yet. Every candidate is tagged **running**, **expected to run**, **exploring**, or **undecided**.
 
+## Redistricting simulator
+
+`redistricting.html` draws congressional maps for **Texas, California, and Pennsylvania** with Markov chain Monte Carlo, using real precincts:
+
+- **Population:** 2020 Census block counts (P.L. 94-171), each block assigned to the precinct that contains it. Totals match the census exactly.
+- **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)).
+- **Map:** precinct shapes and a neighbor graph with shared-border lengths.
+
+You choose the number of districts and a goal: fair & compact, proportional, an exact seat split, a max-Democratic or max-Republican gerrymander, or as many competitive seats as possible. You also set a safe-seat margin, population tolerance, and how hard to avoid county splits.
+
+The chain runs in a Web Worker in three phases:
+
+1. **Balance population** to within your tolerance.
+2. **Hit the partisan goal.** Gerrymander goals keep raising the target until the next seat can't be reached.
+3. **Make it compact.** The seat result is locked while the chain improves Polsby–Popper scores.
+
+Moves are ReCom (merge two districts, cut a random spanning tree into equal halves) and single-precinct flips that are only allowed when the district stays connected. Every district is checked for contiguity at the end. Islands are linked to the nearest precinct across the water.
+
+### Rebuilding the precinct data
+
+The files in `data/redistricting/` are generated. To rebuild them (downloads ~250 MB from `int.nyt.com` and `www2.census.gov`):
+
+```bash
+pip install shapely pyproj numpy
+python3 tools/redistricting/build_data.py TX CA PA
+```
+
 ## Project layout
 
 ```
 index.html              page shell + methodology dialog
+redistricting.html      redistricting simulator page
+js/redistrict/engine.js MCMC engine (runs in a Web Worker and in node)
+js/redistrict/map.js    canvas precinct/district map
+js/redistrict/app.js    simulator UI
+data/redistricting/     generated precinct graphs (tx.js, ca.js, pa.js)
+tools/redistricting/    data build script
 css/styles.css          all styles (light/dark, mobile, print-the-ballot)
 js/data/questions.js    the 22 quiz questions
 js/data/elections.js    states, races, candidates, measures, sources  ← update this
 js/scoring.js           scores, matching, yes/no logic, share links
 js/app.js               UI
-tests/scoring.test.js   node tests
+tests/scoring.test.js   node tests (voter guide)
+tests/redistrict.test.js node tests (redistricting engine + data)
 ```
 
 ## Updating race data
