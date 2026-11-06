@@ -2,7 +2,11 @@
 (function () {
   "use strict";
 
-  const STATES = { TX: { name: "Texas", seats: 38 }, CA: { name: "California", seats: 52 }, PA: { name: "Pennsylvania", seats: 17 } };
+  const STATES = {
+    TX: { name: "Texas", seats: 38 }, CA: { name: "California", seats: 52 }, FL: { name: "Florida", seats: 28 },
+    PA: { name: "Pennsylvania", seats: 17 }, NC: { name: "North Carolina", seats: 14 }, MI: { name: "Michigan", seats: 13 },
+    VA: { name: "Virginia", seats: 11 },
+  };
   // steps for the partisan search; polishing steps per precinct (first stage) and per block (second stage)
   const EFFORT = {
     quick: { search: 8000, coarsePer: 10, finePer: 0.5 },
@@ -24,7 +28,7 @@
     { min: -30, color: "#d9473f", label: "R +15" },
     { min: -Infinity, color: "#9c2a23", label: "R +30" },
   ];
-  const TYPES = { u32: Uint32Array, i32: Int32Array, u16: Uint16Array, f32: Float32Array, d32: Int32Array };
+  const TYPES = { u8: Uint8Array, u32: Uint32Array, i32: Int32Array, u16: Uint16Array, f32: Float32Array, d32: Int32Array };
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -130,7 +134,7 @@
     const pmargin = new Float64Array(np);
     for (let p = 0; p < np; p++) { const t = meta.precincts.dem[p] + meta.precincts.rep[p]; pmargin[p] = t > 0 ? (100 * (meta.precincts.dem[p] - meta.precincts.rep[p])) / t : 0; }
     S.D = { meta, A, overview, raster: meta.raster, graph, n: meta.n, pop, populated, share: dem / (dem + rep), pmargin, np, colors: new Uint32Array(meta.n) };
-    el.statline.innerHTML = fmt(meta.n) + " census blocks · " + fmt(pop) + " people<br>2024: Harris " + pct(dem / (dem + rep)) + " · Trump " + pct(rep / (dem + rep)) + " (two-party)";
+    el.statline.innerHTML = "<strong>" + escapeHtml(meta.name) + "</strong>: " + fmt(meta.n) + " census blocks · " + fmt(pop) + " people<br>2024: Harris " + pct(dem / (dem + rep)) + " · Trump " + pct(rep / (dem + rep)) + " (two-party)";
     el.k.value = meta.seats;
     el.target.dataset.touched = "";
     syncK();
@@ -142,7 +146,7 @@
       if (tst !== S.st || !S.map) return;
       unpackIds(b64, meta.raster.detail.tile).then((ids) => { if (tst === S.st && S.map) S.map.addTile(r, c, ids); });
     };
-    S.map = new window.RedistrictMap(el.canvas, { raster: meta.raster, overview }, {
+    S.map = new window.RedistrictMap(el.canvas, { raster: meta.raster, overview, water: A.water }, {
       onHover: onHover,
       loadTile: (r, c) => loadScript("data/redistricting/" + st.toLowerCase() + "/t" + r + "_" + c + ".js").catch(() => {}),
     });
@@ -214,6 +218,7 @@
     const m = mode();
     return {
       k, mode: m, seed,
+      compact: el.form.elements.compact.value !== "0",
       tol: +el.tol.value,
       targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" ? 0 : +el.margin.value,
@@ -317,6 +322,7 @@
     }
     setStatus(step, r.phase === "done" ? 1 : r.phaseProgress, text);
     el.phases.querySelector('[data-phase="search"]').classList.toggle("is-skipped", S.opts.mode === "neutral");
+    el.phases.querySelector('[data-phase="polish"]').classList.toggle("is-skipped", !S.opts.compact);
   }
 
   // ---------- map coloring ----------
@@ -346,10 +352,12 @@
   function districtLabels() {
     const A = S.D.A, a = S.assign, k = S.report.k, n = S.D.n, q = S.D.raster.q;
     const sx = new Float64Array(k), sy = new Float64Array(k), sw = new Float64Array(k);
-    for (let u = 0; u < n; u++) { const w = A.area[u] + 1; sx[a[u]] += A.x[u] * w; sy[a[u]] += A.y[u] * w; sw[a[u]] += w; }
+    // land only, so labels don't land out in a lake
+    for (let u = 0; u < n; u++) { if (A.water[u]) continue; const w = A.area[u] + 1; sx[a[u]] += A.x[u] * w; sy[a[u]] += A.y[u] * w; sw[a[u]] += w; }
     const best = new Int32Array(k).fill(-1), bestD = new Float64Array(k).fill(Infinity);
     for (let u = 0; u < n; u++) {
       const d = a[u];
+      if (A.water[u] || !sw[d]) continue;
       const dx = A.x[u] - sx[d] / sw[d], dy = A.y[u] - sy[d] / sw[d];
       const dd = dx * dx + dy * dy;
       if (dd < bestD[d]) { bestD[d] = dd; best[d] = u; }

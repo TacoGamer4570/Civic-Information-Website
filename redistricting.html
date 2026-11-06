@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Redistricting Simulator — ballot/decoded</title>
-  <meta name="description" content="Draw congressional maps for Texas, California, or Pennsylvania with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
+  <meta name="description" content="Draw congressional maps for Texas, California, Florida, Pennsylvania, North Carolina, Michigan, or Virginia with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
   <meta name="theme-color" content="#FFF7EA">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='14' fill='%23D4FF3F' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='%23141414' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -39,10 +39,14 @@
       <form class="card rd-panel" id="rd-form" autocomplete="off">
         <fieldset class="rd-field">
           <legend>State</legend>
-          <div class="rd-seg" role="radiogroup" id="rd-state">
-            <label><input type="radio" name="state" value="TX" checked><span>Texas<small>38 seats</small></span></label>
-            <label><input type="radio" name="state" value="CA"><span>California<small>52 seats</small></span></label>
-            <label><input type="radio" name="state" value="PA"><span>Pennsylvania<small>17 seats</small></span></label>
+          <div class="rd-states" role="radiogroup" id="rd-state">
+            <label title="Texas"><input type="radio" name="state" value="TX" aria-label="Texas" checked><span>TX<small>38 seats</small></span></label>
+            <label title="California"><input type="radio" name="state" value="CA" aria-label="California"><span>CA<small>52 seats</small></span></label>
+            <label title="Florida"><input type="radio" name="state" value="FL" aria-label="Florida"><span>FL<small>28 seats</small></span></label>
+            <label title="Pennsylvania"><input type="radio" name="state" value="PA" aria-label="Pennsylvania"><span>PA<small>17 seats</small></span></label>
+            <label title="North Carolina"><input type="radio" name="state" value="NC" aria-label="North Carolina"><span>NC<small>14 seats</small></span></label>
+            <label title="Michigan"><input type="radio" name="state" value="MI" aria-label="Michigan"><span>MI<small>13 seats</small></span></label>
+            <label title="Virginia"><input type="radio" name="state" value="VA" aria-label="Virginia"><span>VA<small>11 seats</small></span></label>
           </div>
           <p class="rd-statline mono small" id="rd-statline">Loading census blocks…</p>
         </fieldset>
@@ -65,6 +69,14 @@
             <label class="rd-goal"><input type="radio" name="mode" value="maxD"><span><strong>Gerrymander for Democrats</strong><small>As many Democratic seats as possible.</small></span></label>
             <label class="rd-goal"><input type="radio" name="mode" value="maxR"><span><strong>Gerrymander for Republicans</strong><small>As many Republican seats as possible.</small></span></label>
             <label class="rd-goal"><input type="radio" name="mode" value="competitive"><span><strong>Competitive</strong><small>As many toss-up districts as possible.</small></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="rd-field">
+          <legend>Shape</legend>
+          <div class="rd-goals" id="rd-compact">
+            <label class="rd-goal"><input type="radio" name="compact" value="1" checked><span><strong>Keep districts compact</strong><small>After the goal is met, tighten the shapes.</small></span></label>
+            <label class="rd-goal"><input type="radio" name="compact" value="0"><span><strong>Ignore compactness</strong><small>Any shape goes. Districts are still one connected piece.</small></span></label>
           </div>
         </fieldset>
 
@@ -215,7 +227,7 @@
       <h2 id="rd-method-title">how the simulator works</h2>
 
       <h3>The building blocks</h3>
-      <p>The map is made of 2020 Census blocks, the smallest areas the Census counts: about 669,000 in Texas, 520,000 in California, and 337,000 in Pennsylvania. Each block carries:</p>
+      <p>The map is made of 2020 Census blocks, the smallest areas the Census counts: from about 163,000 in Virginia to 669,000 in Texas. Each block carries:</p>
       <ul>
         <li><strong>Population</strong>, the exact 2020 Census count.</li>
         <li><strong>Votes</strong> for Harris and Trump in 2024, estimated. Results are only reported by precinct, so each precinct's votes are split among its blocks by voting-age population.</li>
@@ -234,7 +246,7 @@
       <ol>
         <li><strong>Balance population</strong> until every district is within your tolerance of the ideal size.</li>
         <li><strong>Hit the partisan goal.</strong> The score measures how far the map is from the target seat split, counting a seat only if it's won by your safe margin. For "gerrymander" goals the target keeps rising until the chain can't reach the next seat.</li>
-        <li><strong>Make it compact.</strong> The seat result is locked in, and the chain minimizes total district "roundness" cost (Polsby–Popper: 1.0 is a circle, lower is more stretched), with a penalty for splitting counties if you asked for one.</li>
+        <li><strong>Make it compact</strong> (unless you chose to ignore compactness). The seat result is locked in, and the chain minimizes total district "roundness" cost (Polsby–Popper: 1.0 is a circle, lower is more stretched), with a penalty for splitting counties if you asked for one.</li>
         <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>
       <p>Last, every district is checked with a graph search to confirm it's one connected set of blocks.</p>

@@ -247,7 +247,11 @@
       let best = null;      // {assign, E}
       let maxTarget = 0, targetSteps = 0, searchTotal = 0, bestAchievedAssign = null, bestAchievedT = 0;
       let curE = 0;
-      const phases = opts.phases || (mode === "neutral" ? ["polish", "final"] : ["search", "polish", "final"]);
+      // compact=false skips the compactness phase and drops compactness from every
+      // score; districts must still be contiguous (every move checks that).
+      const compact = opts.compact !== false;
+      const phases = (opts.phases || (mode === "neutral" ? ["polish", "final"] : ["search", "polish", "final"]))
+        .filter((p) => compact || p !== "polish");
       let phaseIdx = -1;
 
       function lockOk() {
@@ -599,10 +603,10 @@
         wPop = p === "final" ? 1e6 : p === "polish" ? tune.popW0 : 1000;
         if (p === "balance") {
           // compactness counts too, so moves inside the population band aren't free
-          wPart = 0; wComp = 1; wCty = wCounty; T0 = tune.balanceT0; T1 = tune.balanceT1; recomProb = tune.balanceRecom;
+          wPart = 0; wComp = compact ? 1 : 0; wCty = wCounty; T0 = tune.balanceT0; T1 = tune.balanceT1; recomProb = tune.balanceRecom;
           phaseBudget = Math.max(20000, searchBudget, 3 * n, 2000 * k);
         } else if (p === "search") {
-          wPart = 1; wComp = tune.searchComp; wCty = wCounty * tune.searchComp; T0 = tune.searchT0; T1 = tune.searchT1;
+          wPart = 1; wComp = compact ? tune.searchComp : 0; wCty = wCounty * tune.searchComp; T0 = tune.searchT0; T1 = tune.searchT1;
           phaseBudget = searchBudget; recomProb = tune.searchRecom;
           lock = null;
         } else if (p === "polish") {
@@ -610,7 +614,8 @@
           T0 = tune.polishT0; T1 = tune.polishT1; phaseBudget = polishBudget; recomProb = tune.polishRecom;
           if (!lock && mode !== "neutral") lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
         } else if (p === "final") {
-          wPart = 0; wComp = 1; wCty = wCounty;
+          wPart = 0; wComp = compact ? 1 : 0; wCty = wCounty;
+          if (!lock && mode !== "neutral") lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
           T0 = T1 = 1e-4; phaseBudget = Math.max(30000, 4 * n, 2000 * k); recomProb = 0;
         }
         recomputePen();
@@ -650,7 +655,7 @@
         }
         recomputeAll();
         if (opts.lockFromStart && mode !== "neutral") lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
-        if (mode === "neutral" && !opts.goal) goal = { achieved: true, text: "No partisan goal: equal-population, compact districts" };
+        if (mode === "neutral" && !opts.goal) goal = { achieved: true, text: compact ? "No partisan goal: equal-population, compact districts" : "No partisan goal: equal-population districts, shapes left as they fall" };
         if (worstDev() > userTol) enterPhase("balance");
         else nextPhase();
       }

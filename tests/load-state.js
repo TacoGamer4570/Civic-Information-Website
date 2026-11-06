@@ -4,7 +4,7 @@ const path = require("path");
 global.window = global.window || global;
 const RE = require("../js/redistrict/engine.js");
 
-const TYPES = { u32: Uint32Array, i32: Int32Array, u16: Uint16Array, f32: Float32Array, d32: Int32Array };
+const TYPES = { u8: Uint8Array, u32: Uint32Array, i32: Int32Array, u16: Uint16Array, f32: Float32Array, d32: Int32Array };
 
 function unpack(type, b64) {
   const buf = zlib.inflateSync(Buffer.from(b64, "base64"));

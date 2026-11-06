@@ -104,6 +104,14 @@ test("max-D beats max-R in Democratic seats", () => {
   assert.ok(d.seats.winD > r.seats.winD, d.seats.winD + " vs " + r.seats.winD);
 });
 
+test("ignoring compactness still gives contiguous, balanced districts", () => {
+  const e = run(G, { k: 6, mode: "maxD", tol: 0.02, compact: false });
+  const r = e.report(true);
+  assert.ok(r.contiguity.ok);
+  assert.ok(connectedParts(G, e.assign, 6).every((c) => c === 1));
+  assert.ok(r.maxDev <= 0.02 + 1e-9);
+});
+
 test("many districts: 150 districts on 900 units", () => {
   const e = run(G, { k: 150, mode: "neutral", tol: 0.05 });
   const r = e.report(true);
@@ -130,6 +138,10 @@ const EXPECT = {
   TX: { pop: 29145505, seats: 38, share: 0.4305 },
   CA: { pop: 39538223, seats: 52, share: 0.6040 },
   PA: { pop: 13002700, seats: 17, share: 0.4914 },
+  FL: { pop: 21538187, seats: 28, share: 0.4339 },
+  NC: { pop: 10439388, seats: 14, share: 0.4836 },
+  MI: { pop: 10077331, seats: 13, share: 0.4928 },
+  VA: { pop: 8631393, seats: 11, share: 0.5295 },
 };
 const loaded = {};
 for (const st of Object.keys(EXPECT)) {

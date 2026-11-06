@@ -179,6 +179,13 @@
       }
     }
 
+    // water blocks (lakes, sea) are drawn like the outside: they stay in the
+    // districts (they connect islands) but shouldn't hide the shoreline
+    const water = this.data.water;
+    const WATER = 0xffffffff;
+    if (water) for (let i = 0; i < ids.length; i++) { const id = ids[i]; if (id && water[id - 1]) ids[i] = WATER; }
+    const waterC = packColor(css.getPropertyValue("--map-water").trim() || "#e8eef2");
+
     // colors + borders
     const colors = this.colors, dist = this.dist, hl = this.highlightDistrict;
     const thick = dpr >= 1.25 ? 2 : 1;
@@ -186,10 +193,11 @@
       const row = y * W;
       for (let x = 0; x < W; x++) {
         const id = ids[row + x];
+        if (id === WATER) { pix[row + x] = waterC; continue; }
         if (id === 0) {
-          // state outline: an outside pixel right next to an inside one
+          // state outline: an outside pixel right next to land
           const l = x > 0 ? ids[row + x - 1] : 0, up = y > 0 ? ids[row - W + x] : 0;
-          pix[row + x] = l || up ? ink : bg;
+          pix[row + x] = (l && l !== WATER) || (up && up !== WATER) ? ink : bg;
           continue;
         }
         const u = id - 1;
@@ -198,8 +206,8 @@
           const d = dist[u];
           let edge = false;
           for (let t = 1; t <= thick && !edge; t++) {
-            if (x >= t) { const j = ids[row + x - t]; if (j === 0 || dist[j - 1] !== d) edge = true; }
-            if (y >= t) { const j = ids[row - t * W + x]; if (j === 0 || dist[j - 1] !== d) edge = true; }
+            if (x >= t) { const j = ids[row + x - t]; if (j === 0 || (j !== WATER && dist[j - 1] !== d)) edge = true; }
+            if (y >= t) { const j = ids[row - t * W + x]; if (j === 0 || (j !== WATER && dist[j - 1] !== d)) edge = true; }
           }
           if (edge) c = ink;
           else if (hl >= 0 && d !== hl) c = (((c & 0xfefefe) >>> 1) + ((bg & 0xfefefe) >>> 1)) | 0xff000000;
@@ -241,7 +249,8 @@
 
   RedistrictMap.prototype.blockAt = function (px, py) {
     const w = this.toWorld(px, py);
-    return this._idAt(w.x, w.y, this._useDetail()) - 1;
+    const u = this._idAt(w.x, w.y, this._useDetail()) - 1;
+    return u >= 0 && this.data.water && this.data.water[u] ? -1 : u;
   };
 
   RedistrictMap.prototype.zoomAt = function (px, py, factor) {

@@ -15,7 +15,7 @@ For each state this script:
 
 Usage:
   pip install shapely pyproj numpy scipy geopandas rasterio
-  python3 tools/redistricting/build_data.py [TX CA PA] [--cache DIR]
+  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI] [--cache DIR]
 
 Downloads (~1.8 GB) are cached in --cache (default .cache/redistricting).
 """
@@ -39,6 +39,10 @@ STATES = {
     "TX": {"fips": "48", "name": "Texas", "seats": 38, "pl": "Texas"},
     "CA": {"fips": "06", "name": "California", "seats": 52, "pl": "California"},
     "PA": {"fips": "42", "name": "Pennsylvania", "seats": 17, "pl": "Pennsylvania"},
+    "VA": {"fips": "51", "name": "Virginia", "seats": 11, "pl": "Virginia"},
+    "NC": {"fips": "37", "name": "North Carolina", "seats": 14, "pl": "North_Carolina"},
+    "FL": {"fips": "12", "name": "Florida", "seats": 28, "pl": "Florida"},
+    "MI": {"fips": "26", "name": "Michigan", "seats": 13, "pl": "Michigan"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
@@ -139,7 +143,7 @@ def load_pl(cache, st, meta):
 def load_blocks(cache, st, meta):
     import geopandas as gpd
     path = fetch(BLOCK_URL.format(fips=meta["fips"]), os.path.join(cache, f"tl_2020_{meta['fips']}_tabblock20.zip"))
-    cols = ["GEOID20", "COUNTYFP20", "TRACTCE20", "BLOCKCE20", "POP20", "INTPTLAT20", "INTPTLON20"]
+    cols = ["GEOID20", "COUNTYFP20", "TRACTCE20", "BLOCKCE20", "POP20", "INTPTLAT20", "INTPTLON20", "ALAND20"]
     g = gpd.read_file(path, engine="pyogrio", columns=cols)
     return g.sort_values("GEOID20").reset_index(drop=True)
 
@@ -363,6 +367,7 @@ def build(st, cache):
         # precinct votes * weight / (sum of weights in the precinct).
         "arrays": {
             "pop": ["u32", pack(pop.astype("<u4"))],
+            "water": ["u8", pack((blocks.ALAND20.values == 0).astype("u1"))],  # 1 = no land (lakes, sea)
             "weight": ["u32", pack(np.minimum(np.round(wsave), 4e9).astype("<u4"))],
             "precinct": ["i32", pack(prec.astype("<i4"))],
             "county": ["u16", pack(county.astype("<u2"))],
