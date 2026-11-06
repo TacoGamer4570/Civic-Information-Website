@@ -201,7 +201,7 @@
       const gerry = m === "maxD" || m === "maxR";
       el.marginLabel.textContent = gerry ? "Safe-seat floor" : "Safe-seat margin";
       el.marginHint.textContent = gerry
-        ? "First, as many districts as possible won by at least this many points (2024 presidential). Then, with those locked, as many narrower wins, then toss-ups (losing by under 5), then districts losing by under 15."
+        ? "First, as many districts as possible won by at least this many points (2024 presidential). Then, with those locked, as many narrower wins as possible. Then every other district, best first, is pushed as close to this floor as it will go, without giving up a seat."
         : "A seat only counts if the winner leads by at least this many points in the 2024 presidential vote. 0 = any win.";
       if (!el.margin.dataset.touched) el.margin.value = 3;
     }
@@ -527,8 +527,8 @@
     const c = r.contiguity;
     const tiles = [];
     tiles.push(tile("Seats", '<span class="party-d-ink">' + fmt(dWins) + " D</span> – <span class=\"party-r-ink\">" + fmt(rWins) + " R</span>",
-      escapeHtml(goal.text || "") + (!r.tiers && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
-    if (r.tiers) tiles.push(tile("Gerrymander tiers", tierBars(r), "Districts by margin for " + (S.opts.mode === "maxD" ? "Democrats" : "Republicans") + ". Each tier was maximized after the one above it was locked in.", "rd-tile-wide"));
+      escapeHtml(goal.text || "") + (!r.gerry && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
+    if (r.gerry) tiles.push(tile("Gerrymander result", gerryBars(r), "Safe seats were maximized first, then wins under the floor; then every other district, best first, was pushed as close to the floor as it would go without giving up a seat.", "rd-tile-wide"));
     tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
     if (c) {
       tiles.push(tile("Contiguity", c.ok ? "✓ all " + fmt(k) : "✗ " + c.broken.length + " broken",
@@ -552,18 +552,15 @@
     el.notes.innerHTML = (r.notes || []).map(escapeHtml).join(" ");
   }
 
-  // one row per tier: count of districts at or above that margin for the favored party
-  function tierBars(r) {
-    const k = r.k, t = r.tiers, other = S.opts.mode === "maxD" ? "R" : "D";
-    const rows = [];
-    let prev = 0;
-    t.forEach((x, j) => {
-      const label = x.margin > 0 ? "Won by " + x.margin + "+" : x.margin === 0 ? (j ? "Won by less" : "Won") : "Losing by <" + -x.margin;
-      rows.push({ label, n: x.count - prev });
-      prev = x.count;
-    });
-    rows.push({ label: "Safe " + other, n: k - prev });
-    return '<div class="rd-tiers">' + rows.map((x) => '<div class="rd-tier"><span>' + x.label + '</span><strong>' + fmt(x.n) + "</strong></div>").join("") + "</div>";
+  // safe seats, narrower wins, then every other district's margin, best first
+  function gerryBars(r) {
+    const g = r.gerry, D = S.opts.mode === "maxD";
+    const fmtM = (x) => (x >= 0 ? (D ? "D+" : "R+") : (D ? "R+" : "D+")) + Math.abs(x).toFixed(1);
+    const boxes = ['<div class="rd-tier"><span>Won by ' + g.floor + "+</span><strong>" + fmt(g.safe) + "</strong></div>"];
+    if (g.floor > 0) boxes.push('<div class="rd-tier"><span>Won by less</span><strong>' + fmt(g.wins - g.safe) + "</strong></div>");
+    const rest = g.margins.slice(g.safe);
+    const chips = rest.slice(0, 60).map((m) => '<span class="rd-chip ' + (m > 0 ? "is-win" : "") + '">' + fmtM(m) + "</span>").join("") + (rest.length > 60 ? '<span class="rd-chip">+' + (rest.length - 60) + " more</span>" : "");
+    return '<div class="rd-tiers">' + boxes.join("") + "</div>" + (rest.length ? '<div class="rd-chips"><span class="rd-chips-l">Every other district, best first:</span>' + chips + "</div>" : "");
   }
 
   function renderChart(r) {

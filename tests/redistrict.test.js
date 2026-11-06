@@ -98,15 +98,29 @@ test("exact seat target is reached and kept through the compactness phase", () =
   assert.ok(r.contiguity.ok);
 });
 
-test("gerrymander tiers: safe seats first, then each tier below, all reported", () => {
-  const e = run(G, { k: 6, mode: "maxD", margin: 4, tol: 0.02 });
+test("gerrymander: safe seats, then wins, then each district pushed toward the floor", () => {
+  const e = run(G, { k: 6, mode: "maxD", margin: 4, tol: 0.02, searchSteps: 6000 });
   const r = e.report(true);
-  assert.deepStrictEqual(r.tiers.map((t) => t.margin), [4, 0, -5, -15]);
-  for (let j = 1; j < r.tiers.length; j++) assert.ok(r.tiers[j].count >= r.tiers[j - 1].count, "tiers are cumulative");
-  const m = r.districts.map((d) => 200 * d.share - 100);
-  assert.strictEqual(r.tiers[0].count, m.filter((x) => x >= 4).length);
-  assert.strictEqual(r.tiers[1].count, m.filter((x) => x > 0).length);
-  assert.ok(r.goal.text.includes("Below that"));
+  const m = r.districts.map((d) => 200 * d.share - 100).sort((a, b) => b - a);
+  assert.strictEqual(r.gerry.safe, m.filter((x) => x >= 4).length);
+  assert.strictEqual(r.gerry.wins, m.filter((x) => x > 0).length);
+  assert.deepStrictEqual(r.gerry.margins.map((x) => x.toFixed(6)), m.map((x) => x.toFixed(6)));
+  assert.ok(r.gerry.safe >= 1);
+  assert.ok(r.contiguity.ok);
+});
+
+test("gerrymander: the district-by-district stage never gives back a seat", () => {
+  // compare with a run that stops after the seat counts (district stage off via a huge k cap is not
+  // exposed, so check the invariant directly: wins after the run >= wins locked during search)
+  const e = RE.createEngine(G, { k: 6, mode: "maxR", margin: 4, tol: 0.02, seed: 8, searchSteps: 6000, polishSteps: 6000 });
+  e.init();
+  let winsSeen = -1;
+  while (!e.run(200)) {
+    const r = e.report(false);
+    if (r.phase !== "search" && winsSeen < 0) winsSeen = r.gerry.wins;
+    if (winsSeen >= 0) assert.ok(r.gerry.wins >= winsSeen, "wins dropped");
+  }
+  assert.ok(e.report(false).gerry.wins >= winsSeen);
 });
 
 test("max-D beats max-R in Democratic seats", () => {

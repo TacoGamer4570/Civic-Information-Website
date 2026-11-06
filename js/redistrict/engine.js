@@ -161,12 +161,22 @@
       const cPresent = new Int32Array(nc); // districts touching county c
       let splits = 0, compSum = 0, penSum = 0, partE = 0;
       let cntSafeD = 0, cntSafeR = 0, cntComp = 0, cntWinD = 0;
-      // Gerrymander tiers (max modes), from the favored party's side, in margin
-      // points: safe (>= floor), any win, toss-up (losing by < 5), lean (losing by < 15).
-      // The search maximizes each tier in turn, locking the ones before it.
+      // Gerrymanders (max modes), from the favored party's side:
+      //  1. maximize districts won by at least the floor (safe seats), then lock that count;
+      //  2. maximize the remaining wins (under the floor), then lock that count;
+      //  3. one district at a time, best first: push it as close to the floor as it
+      //     will go, then lock its level and move to the next. Locks mean no seat is
+      //     ever given back.
       const isMax = mode === "maxD" || mode === "maxR";
       const floorPts = opts.margin || 0;
-      const tierMargins = isMax ? (floorPts > 0 ? [floorPts, 0, -5, -15] : [0, -5, -15]) : [];
+      const tierMargins = isMax ? (floorPts > 0 ? [floorPts, 0] : [0]) : [];
+      const thFloor = 0.5 + floorPts / 200 + (floorPts === 0 ? 1e-9 : 0);
+      const posLock = new Float64Array(k).fill(-Infinity), lockBuf = new Float64Array(k);
+      const posOn = isMax && k <= 400;
+      let posIdx = -1, posSteps = 0, posBestVal = -Infinity, posBestAssign = null;
+      const posPatience = Math.max(1000, Math.round(searchBudget / 10));
+      // party shares, best district first
+      function partySorted(buf) { for (let d = 0; d < k; d++) buf[d] = pshare(shares[d]); buf.sort(); buf.reverse(); return buf; }
       const tierTh = tierMargins.map((m) => 0.5 + m / 200 + (m === 0 ? 1e-9 : 0));
       const nTier = tierTh.length;
       const cntTier = new Int32Array(nTier), dTier = new Uint8Array(k), tierLock = new Int32Array(nTier).fill(-1);
@@ -252,6 +262,11 @@
           for (let d = 0; d < k; d++) { const x = Math.abs(2 * shares[d] - 1) - 2 * band; if (x > 0) e += x; }
           return e * 100;
         }
+        if (isMax && posIdx >= 0) {
+          // the district at position posIdx (best first) should get as close to the floor as it can
+          const v = partySorted(sortBuf)[posIdx];
+          return Math.max(0, thFloor - v) * 100;
+        }
         if (isMax) {
           // the top `maxTarget` districts (by the party's share) should clear this tier's line
           for (let d = 0; d < k; d++) sortBuf[d] = pshare(shares[d]);
@@ -289,7 +304,14 @@
 
       function lockOk() {
         if (!lock) return true;
-        if (lock.tiers) { for (let j = 0; j < nTier; j++) if (lock.tiers[j] >= 0 && cntTier[j] < lock.tiers[j]) return false; return true; }
+        if (lock.tiers) {
+          for (let j = 0; j < nTier; j++) if (lock.tiers[j] >= 0 && cntTier[j] < lock.tiers[j]) return false;
+          if (lock.pos) {
+            const b = partySorted(lockBuf);
+            for (let q = 0; q < k; q++) if (b[q] < lock.pos[q]) return false;
+          }
+          return true;
+        }
         if (mode === "competitive") return cntComp >= lock.comp;
         return cntSafeD >= lock.safeD && cntSafeR >= lock.safeR;
       }
@@ -651,7 +673,7 @@
           wPart = 1; wComp = compact ? tune.searchComp : 0; wCty = wCounty * tune.searchComp; T0 = tune.searchT0; T1 = tune.searchT1;
           phaseBudget = searchBudget; recomProb = tune.searchRecom;
           lock = null;
-          if (isMax) { tierIdx = 0; tierLock.fill(-1); lock = { tiers: tierLock }; }
+          if (isMax) { tierIdx = 0; posIdx = -1; tierLock.fill(-1); posLock.fill(-Infinity); lock = { tiers: tierLock, pos: posLock }; }
         } else if (p === "polish") {
           wPart = 0; wComp = 1; wCty = wCounty;
           T0 = tune.polishT0; T1 = tune.polishT1; phaseBudget = polishBudget; recomProb = tune.polishRecom;
@@ -680,8 +702,13 @@
         if (phase === "polish" && best) restore(best.assign);
         phase = "done";
       }
+      // Locks for the later phases. For gerrymanders, each district below the floor
+      // keeps (almost) its level: 0.2 points of slack so borders can still be smoothed.
       function currentLock() {
-        return isMax ? { tiers: Array.from(cntTier) } : { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+        if (!isMax) return { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+        const b = partySorted(new Float64Array(k)), pos = new Float64Array(k).fill(-Infinity);
+        if (posOn) for (let q = cntTier[0]; q < k; q++) pos[q] = Math.min(b[q], thFloor) - 0.001;
+        return { tiers: Array.from(cntTier), pos };
       }
       function startNextTarget(first) {
         if (first) {
@@ -730,6 +757,19 @@
           }
         } else if (phase === "search") {
           searchTotal++;
+          if (isMax && posIdx >= 0) {
+            posSteps++;
+            const v = thFloor - partE / 100;
+            if (v > posBestVal + 1e-9) { posBestVal = v; posBestAssign.set(assign); }
+            if (partE === 0 || posSteps >= posPatience) {
+              restore(posBestAssign);
+              posLock[posIdx] = Math.min(posBestVal, thFloor) - 1e-9;
+              posIdx++;
+              if (posIdx >= k) { finishSearch(true); return; }
+              startPosition();
+            }
+            return;
+          }
           if (isMax) {
             targetSteps++;
             const patience = tierIdx === 0 ? phaseBudget : phaseBudget / 2;
@@ -769,26 +809,37 @@
         }
       }
 
-      // lock this tier's count and move on to the next tier
+      // lock this count and move on: next count, then district-by-district
       function nextTier() {
         tierLock[tierIdx] = cntTier[tierIdx];
         tierIdx++;
-        if (tierIdx >= nTier) { tierIdx = nTier - 1; finishSearch(true); return; }
-        startNextTarget(true);
+        if (tierIdx < nTier) { startNextTarget(true); return; }
+        tierIdx = nTier - 1;
+        posIdx = cntTier[0]; // first district below the floor
+        if (!posOn || posIdx >= k) { posIdx = -1; finishSearch(true); return; }
+        startPosition();
       }
-      function tierText() {
-        const other = mode === "maxD" ? "R" : "D";
-        const by = (j) => cntTier[j] - (j ? cntTier[j - 1] : 0);
-        const parts = [];
-        const j = floorPts > 0 ? 1 : 0;
-        if (j) parts.push(by(1) + " narrower win" + (by(1) === 1 ? "" : "s"));
-        parts.push(by(j + 1) + " toss-up" + (by(j + 1) === 1 ? "" : "s") + " (losing by <5)");
-        parts.push(by(j + 2) + " leaning " + other + " (losing by <15)");
-        return parts.join(", ");
+      function startPosition() {
+        posSteps = 0; phaseStep = 0;
+        partE = partisanE();
+        posBestVal = thFloor - partE / 100;
+        if (!posBestAssign) posBestAssign = new Int32Array(n);
+        posBestAssign.set(assign);
+        curE = energy();
+        T = T0 * 0.5;
+      }
+      // margins (points) from the favored party's side, best district first
+      function partyMargins() { return Array.from(partySorted(new Float64Array(k)), (v) => 200 * v - 100); }
+      function gerryText() {
+        const S = cntTier[0], W = cntTier[nTier - 1], rest = k - S;
+        // counts only: they're locked, so they stay true after later phases (margins can still shift a little)
+        let t = floorPts > 0 ? " Narrower wins: " + (W - S) + "." : "";
+        if (rest > 0 && posOn) t += " Every other district was then pushed as close to the floor as it would go.";
+        return t;
       }
       function finishSearch(achieved) {
         const margin = h > 0 ? " by " + (h * 200).toFixed(0) + "+ points" : "";
-        if (isMax) goal = { achieved: cntTier[0] > 0, text: "Most " + (mode === "maxD" ? "Democratic" : "Republican") + " seats found: " + cntTier[0] + " of " + k + (margin ? " won" + margin : "") + ". Below that: " + tierText() + "." };
+        if (isMax) { posIdx = -1; goal = { achieved: cntTier[0] > 0, text: "Most " + (mode === "maxD" ? "Democratic" : "Republican") + " seats found: " + cntTier[0] + " of " + k + (margin ? " won" + margin : "") + "." + gerryText() }; }
         else if (mode === "competitive") goal = { achieved: true, text: cntComp + " of " + k + " districts within " + (band * 200).toFixed(0) + " points" };
         else {
           const want = needD + " D / " + needR + " R" + margin;
@@ -852,7 +903,7 @@
         return {
           phase, step: stepCount, k, ideal, tol, userTol, stateShare, unitName,
           seats: outcome(), districts, maxDev, minPop, maxPop, meanPP: ppSum / k,
-          tiers: isMax ? tierMargins.map((m, j) => ({ margin: m, count: cntTier[j] })) : null,
+          gerry: isMax ? { floor: floorPts, safe: cntTier[0], wins: cntTier[nTier - 1], margins: partyMargins() } : null,
           efficiencyGap: (wastedD - wastedR) / votes, // >0 means Dem votes are wasted more (map favors R)
           meanMedian: median - mean,                  // <0 means map favors R
           splitCounties: countyOn ? splitCounties : null, countySplits: splits,
@@ -867,9 +918,10 @@
       function progressGoal() {
         if (phase !== "search") return { achieved: false, text: phase === "balance" ? "Balancing population" : goal.text };
         if (isMax) {
-          const party = mode === "maxD" ? "Democratic" : "Republican", m = tierMargins[tierIdx], need = Math.min(k, maxTarget);
-          const what = m > 0 ? party + " seats won by " + m + "+" : m === 0 ? party + " wins" : "districts within " + -m + " points of a " + party + " win";
-          return { achieved: false, text: (tierIdx ? "Locked in the tiers above; now trying for " : "Trying for ") + need + " " + what };
+          const party = mode === "maxD" ? "Democratic" : "Republican", need = Math.min(k, maxTarget);
+          if (posIdx >= 0) return { achieved: false, text: "Locked " + cntTier[0] + " safe seats and " + cntTier[nTier - 1] + " wins; now pushing the #" + (posIdx + 1) + " district toward the floor" };
+          if (tierIdx === 0) return { achieved: false, text: "Trying for " + need + " " + party + " seats" + (floorPts > 0 ? " won by " + floorPts + "+" : "") };
+          return { achieved: false, text: "Locked " + cntTier[0] + " safe seats; now trying for " + need + " " + party + " wins" };
         }
         if (mode === "competitive") return { achieved: false, text: "Making districts competitive" };
         return { achieved: false, text: "Aiming for " + needD + " D / " + needR + " R" };
@@ -1109,7 +1161,8 @@
       function score(r) {
         const valid = r.contiguity && r.contiguity.ok && r.maxDev <= tol + 1e-9 ? 1 : 0;
         let primary = [0];
-        if (r.tiers) primary = r.tiers.map((t) => t.count); // safe seats first, then each tier below
+        // gerrymanders: safe seats, then wins, then each district's margin (capped at the floor), best first
+        if (r.gerry) primary = [r.gerry.safe, r.gerry.wins].concat(r.gerry.margins.slice(r.gerry.safe).map((m) => Math.min(m, r.gerry.floor)));
         else if (mode === "competitive") primary = [r.seats.comp];
         else if (mode === "target" || mode === "proportional") primary = [-deficit(r)];
         const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9), 0) : -r.maxDev;
