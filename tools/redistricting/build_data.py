@@ -15,7 +15,7 @@ For each state this script:
 
 Usage:
   pip install shapely pyproj numpy scipy geopandas rasterio
-  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI] [--cache DIR]
+  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN] [--cache DIR]
 
 Downloads (~1.8 GB) are cached in --cache (default .cache/redistricting).
 """
@@ -47,6 +47,10 @@ STATES = {
     "GA": {"fips": "13", "name": "Georgia", "seats": 14, "pl": "Georgia"},
     "NV": {"fips": "32", "name": "Nevada", "seats": 4, "pl": "Nevada"},
     "WI": {"fips": "55", "name": "Wisconsin", "seats": 8, "pl": "Wisconsin"},
+    "AZ": {"fips": "04", "name": "Arizona", "seats": 9, "pl": "Arizona"},
+    "NY": {"fips": "36", "name": "New York", "seats": 26, "pl": "New_York"},
+    "IL": {"fips": "17", "name": "Illinois", "seats": 17, "pl": "Illinois"},
+    "MN": {"fips": "27", "name": "Minnesota", "seats": 8, "pl": "Minnesota"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
@@ -222,49 +226,77 @@ def connect_components(n, u, v, px, py):
         bridges.append((min(a, b), max(a, b)))
 
 
+LINK_KM = 3.0  # land masses this close across water get linked (narrow rivers, sounds, causeways)
+
+
 def land_bridges(n, u, v, water, px, py):
     """Districts may only connect over land. Pieces of land cut off by water
-    (islands, Michigan's Upper Peninsula, Virginia's Eastern Shore...) get one
-    link each to the nearest land outside them. Returns flat [a, b, a, b, ...]."""
+    (islands, Manhattan, Long Island, Michigan's Upper Peninsula...) are linked to
+    every other piece within LINK_KM across the water, at their closest points,
+    and anything still cut off gets one link to the nearest land.
+    Returns flat [a, b, a, b, ...]."""
     import scipy.sparse as sp
     import scipy.sparse.csgraph as cg
     from scipy.spatial import cKDTree
     land = np.flatnonzero(water == 0)
     m = (water[u] == 0) & (water[v] == 0)
     lu, lv = u[m], v[m]
-    bridges = []
     pts = np.c_[px, py]
-    while True:
-        bu = np.array([b[0] for b in bridges], dtype=np.int64)
-        bv = np.array([b[1] for b in bridges], dtype=np.int64)
+    tree = cKDTree(pts[land])
+
+    def components(extra):
+        bu = np.array([b[0] for b in extra], dtype=np.int64)
+        bv = np.array([b[1] for b in extra], dtype=np.int64)
         A = sp.coo_matrix((np.ones(len(lu) + len(bu)), (np.r_[lu, bu], np.r_[lv, bv])), shape=(n, n)).tocsr()
-        sub = A[land][:, land]
-        nc, lab = cg.connected_components(sub, directed=False)
+        return cg.connected_components(A[land][:, land], directed=False)
+
+    # 1. every pair of land masses within LINK_KM, at their closest points
+    nc, lab = components([])
+    best = {}
+    if nc > 1:
+        main = int(np.argmax(np.bincount(lab)))
+        lp = pts[land]
+        R = LINK_KM * 1000
+        for c in range(nc):
+            if c == main:
+                continue
+            mem = np.flatnonzero(lab == c)
+            cp = lp[mem]
+            lo, hi = cp.min(axis=0) - R, cp.max(axis=0) + R
+            near = np.flatnonzero((lab != c) & np.all((lp >= lo) & (lp <= hi), axis=1))
+            if not len(near):
+                continue
+            d, j = cKDTree(cp).query(lp[near], distance_upper_bound=R)
+            ok = np.flatnonzero(np.isfinite(d))
+            for r in ok:
+                c2 = lab[near[r]]
+                key = (min(c, c2), max(c, c2))
+                if key not in best or d[r] < best[key][0]:
+                    best[key] = (d[r], land[mem[j[r]]], land[near[r]])
+    bridges = {(int(min(a, b)), int(max(a, b))) for _, a, b in best.values()}
+
+    # 2. anything still cut off: one link to the nearest land outside it
+    while True:
+        nc, lab = components(list(bridges))
         if nc == 1:
             break
         sizes = np.bincount(lab)
         main = int(np.argmax(sizes))
-        tree = cKDTree(pts[land])
-        added = set()
         for c in np.argsort(sizes):
             if c == main:
                 continue
             mem = np.flatnonzero(lab == c)
-            kq = min(len(land), 64)
-            d, j = tree.query(pts[land[mem]], k=kq)
+            d, j = tree.query(pts[land[mem]], k=min(len(land), 64))
             d = np.where(lab[j] != c, d, np.inf)
             if not np.isfinite(d).any():
                 oth = np.flatnonzero(lab != c)
                 d2, j2 = cKDTree(pts[land[oth]]).query(pts[land[mem]])
                 i = int(np.argmin(d2)); a, b = land[mem[i]], land[oth[j2[i]]]
             else:
-                i, jj = np.unravel_index(np.argmin(d), d.shape)
-                a, b = land[mem[i]], land[j[i, jj]]
-            key = (min(a, b), max(a, b))
-            if key not in added:
-                added.add(key)
-                bridges.append((int(key[0]), int(key[1])))
-    return [x for b in bridges for x in b]
+                i, k2 = np.unravel_index(np.argmin(d), d.shape)
+                a, b = land[mem[i]], land[j[i, k2]]
+            bridges.add((int(min(a, b)), int(max(a, b))))
+    return [x for b in sorted(bridges) for x in b]
 
 
 # ---------------------------------------------------------------- output

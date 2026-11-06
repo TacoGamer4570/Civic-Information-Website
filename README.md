@@ -46,11 +46,11 @@ Most fields aren't final yet. Every candidate is tagged **running**, **expected 
 
 ## Redistricting simulator
 
-`redistricting.html` draws maps for **Texas, California, Florida, Pennsylvania, Ohio, Georgia, North Carolina, Michigan, Virginia, Wisconsin, and Nevada** with Markov chain Monte Carlo, built from **2020 Census blocks** (from 57k in NV to 669k in TX):
+`redistricting.html` draws maps for **California, Texas, Florida, New York, Pennsylvania, Illinois, Ohio, Georgia, North Carolina, Michigan, Virginia, Arizona, Wisconsin, Minnesota, and Nevada** with Markov chain Monte Carlo, built from **2020 Census blocks** (from 57k in NV to 669k in TX):
 
 - **Population:** exact 2020 Census block counts (P.L. 94-171).
 - **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)), split to the blocks inside each precinct by voting-age population. Block votes are estimates; statewide totals match the precinct data exactly.
-- **Map:** block adjacency and shared-border lengths straight from the Census's TIGER/Line topology Districts must connect **over land**: water blocks are left out of the search, and only land cut off by water (islands, Michigan's Upper Peninsula, Virginia's Eastern Shore...) is linked to the nearest land across it. Water blocks follow the land next to them and still count toward district shapes, plus "id images" of each state (each pixel = the block under it) for fast drawing, with sharper tiles loaded on zoom.
+- **Map:** block adjacency and shared-border lengths straight from the Census's TIGER/Line topology Districts must connect **over land**: water blocks are left out of the search, and only land cut off by water (islands, Michigan's Upper Peninsula, Virginia's Eastern Shore...) is linked to any other land within 3 km across the water (Manhattan to the Bronx, Brooklyn and Queens, and so on), or to the nearest land if none is that close. Water blocks follow the land next to them and still count toward district shapes, plus "id images" of each state (each pixel = the block under it) for fast drawing, with sharper tiles loaded on zoom.
 
 You choose any number of districts (2 up to one per populated block) and a goal: fair & compact, proportional, an exact seat split, a max-Democratic or max-Republican gerrymander, or as many competitive seats as possible. You also set a safe-seat margin, population tolerance (down to ±0.001%), how hard to avoid county splits, and whether to keep districts compact or ignore compactness entirely (districts are always contiguous either way).
 
@@ -71,7 +71,7 @@ The files in `data/redistricting/` are generated (about 93 MB). To rebuild them 
 
 ```bash
 pip install shapely pyproj numpy scipy geopandas rasterio
-python3 tools/redistricting/build_data.py TX CA PA FL NC MI VA OH GA NV WI
+python3 tools/redistricting/build_data.py TX CA PA FL NC MI VA OH GA NV WI AZ NY IL MN
 ```
 
 ## Project layout

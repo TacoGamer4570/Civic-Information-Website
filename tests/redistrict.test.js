@@ -197,6 +197,10 @@ const EXPECT = {
   GA: { pop: 10711908, seats: 14, share: 0.4890 },
   NV: { pop: 3104614, seats: 4, share: 0.4844 },
   WI: { pop: 5893718, seats: 8, share: 0.4956 },
+  AZ: { pop: 7151502, seats: 9, share: 0.4721 },
+  NY: { pop: 20201249, seats: 26, share: 0.5634 },
+  IL: { pop: 12812508, seats: 17, share: 0.5556 },
+  MN: { pop: 5706494, seats: 8, share: 0.5217 },
 };
 const loaded = {};
 for (const st of Object.keys(EXPECT)) {
