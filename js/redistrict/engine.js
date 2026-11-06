@@ -638,6 +638,11 @@
         phase = "done";
       }
       function startNextTarget(first) {
+        if (first) {
+          // the starting map is the fallback if the next seat can't be reached
+          const have = mode === "maxD" ? cntSafeD : cntSafeR;
+          if (have > 0) { bestAchievedT = have; bestAchievedAssign = Int32Array.from(assign); }
+        }
         if (mode === "maxD") { maxTarget = first ? cntSafeD + 1 : maxTarget + 1; needD = Math.min(k, maxTarget); needR = 0; }
         else { maxTarget = first ? cntSafeR + 1 : maxTarget + 1; needR = Math.min(k, maxTarget); needD = 0; }
         targetSteps = 0; phaseStep = 0;
@@ -849,10 +854,11 @@
         balanceRecom: smallDistricts ? 0.3 : 0, balanceT0: 0.003, balanceT1: 0.0003,
         polishRecom: smallDistricts ? 0.02 : 0, polishT0: 0.003, polishT1: 0.0002, popW0: 300,
       }, opts.tune && opts.tune.fine);
-      function startFine(initialAssign, goal) {
+      // fromCoarse: the map came out of the precinct stage, so its seat result is locked
+      function startFine(initialAssign, goal, fromCoarse) {
         eng = createEngine(fine, Object.assign({}, opts, {
-          rand, initialAssign, goal, lockFromStart: !!initialAssign, unitName: "block",
-          phases: initialAssign ? ["polish", "final"] : (neutral ? ["polish", "final"] : ["search", "polish", "final"]),
+          rand, initialAssign, goal, lockFromStart: !!fromCoarse, unitName: "block",
+          phases: fromCoarse || neutral ? ["polish", "final"] : ["search", "polish", "final"],
           polishSteps: opts.finePolishSteps, tune: fineTune,
         }));
         eng.init();
@@ -864,18 +870,34 @@
         const ideal = agg.graph.pop.reduce((x, y) => x + y, 0) / k;
         coarseTol = Math.min(0.05, Math.max(opts.tol || 0, 0.005, 2 * meanPrecinct / ideal));
       }
+      // opts.startAssign (block-level map) seeds the run; each precinct goes to the
+      // district holding most of its people
+      function coarseStart() {
+        const sa = opts.startAssign;
+        if (!sa || !useCoarse) return null;
+        const m = agg.graph.n, gof = agg.groupOf;
+        const best = new Int32Array(m).fill(-1), bestW = new Float64Array(m).fill(-1);
+        const acc = new Map();
+        for (let u = 0; u < fine.n; u++) {
+          const key = gof[u] * k + sa[u];
+          const w = (acc.get(key) || 0) + fine.pop[u] + 1e-3;
+          acc.set(key, w);
+          if (w > bestW[gof[u]]) { bestW[gof[u]] = w; best[gof[u]] = sa[u]; }
+        }
+        return best;
+      }
       function init() {
         if (useCoarse) {
           coarse = createEngine(agg.graph, Object.assign({}, opts, {
             // as tight as whole precincts allow, so the block stage has little left to move
-            rand, tol: coarseTol, unitName: "precinct",
+            rand, tol: coarseTol, unitName: "precinct", initialAssign: coarseStart(),
             phases: neutral ? ["polish"] : ["search", "polish"],
             polishSteps: opts.coarsePolishSteps, tune: coarseTune,
           }));
           coarse.init();
           stage = "precinct";
         } else {
-          startFine(null, null);
+          startFine(opts.startAssign || null, null, false);
         }
       }
       function current() { return stage === "precinct" ? coarse : eng; }
@@ -888,7 +910,7 @@
         return eng.assign;
       }
       function advance() {
-        if (stage === "precinct" && coarse.phase === "done") startFine(Int32Array.from(assignment()), coarse.goal);
+        if (stage === "precinct" && coarse.phase === "done") startFine(Int32Array.from(assignment()), coarse.goal, true);
       }
       return {
         init,
@@ -921,7 +943,98 @@
       return { n, pop: A.pop, dem, rep, area, ext: A.ext, county: A.county, eu, ev, elen: A.elen, group: A.precinct };
     }
 
-    return { makeRng, buildGraph, aggregate, createEngine, createPipeline, prepareGraph };
+    // ---------- superthinking: run the whole pipeline in cycles, forever ----------
+    // Each cycle balances, chases the goal, compacts and refines on blocks, then is
+    // scored against the best map so far. Most cycles start from the best map (and
+    // gerrymander goals aim one seat higher); every 4th starts from a fresh random
+    // map to get out of dead ends. Runs until stop().
+    function createEndless(fine, group, opts) {
+      const mode = opts.mode || "neutral";
+      const h = (opts.margin || 0) / 200, tol = opts.tol == null ? 0.005 : opts.tol;
+      const compact = opts.compact !== false;
+      let cycle = 0, pipe = null, best = null, improved = false, stopped = false;
+      const baseSeed = opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed;
+
+      function deficit(r) {
+        const t = r.target, sh = r.districts.map((d) => d.share).sort((a, b) => a - b), k = sh.length;
+        let e = 0;
+        for (let i = 0; i < t.needR; i++) e += Math.max(0, sh[i] - (0.5 - h));
+        for (let i = k - t.needD; i < k; i++) e += Math.max(0, 0.5 + h - sh[i]);
+        return e;
+      }
+      // higher is better, compared left to right
+      function score(r) {
+        const valid = r.contiguity && r.contiguity.ok && r.maxDev <= tol + 1e-9 ? 1 : 0;
+        let primary = 0;
+        if (mode === "maxD") primary = r.seats.safeD;
+        else if (mode === "maxR") primary = r.seats.safeR;
+        else if (mode === "competitive") primary = r.seats.comp;
+        else if (mode === "target" || mode === "proportional") primary = -deficit(r);
+        const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9), 0) : -r.maxDev;
+        return valid ? [1, primary, shape] : [0, -r.maxDev, primary];
+      }
+      function better(a, b) {
+        for (let i = 0; i < a.length; i++) { if (a[i] > b[i] + 1e-12) return true; if (a[i] < b[i] - 1e-12) return false; }
+        return false;
+      }
+      function startCycle() {
+        cycle++;
+        const fresh = !best || cycle % 4 === 1;
+        // later cycles search harder (up to 4x the normal budget)
+        const boost = Math.min(4, 1 + 0.5 * (cycle - 1));
+        pipe = createPipeline(fine, group, Object.assign({}, opts, {
+          seed: (baseSeed + cycle * 7919) >>> 0,
+          startAssign: fresh ? null : best.assign,
+          searchSteps: Math.round((opts.searchSteps || 40000) * boost),
+        }));
+        pipe.init();
+      }
+      function endCycle() {
+        const r = pipe.report(true);
+        const sc = score(r);
+        if (!best || better(sc, best.score)) {
+          best = { assign: Int32Array.from(pipe.assignment()), report: r, score: sc, cycle };
+          improved = true;
+        }
+      }
+      return {
+        init() { startCycle(); },
+        get phase() { return stopped ? "done" : pipe.phase; },
+        get stage() { return pipe.stage; },
+        get useCoarse() { return pipe.useCoarse; },
+        get cycle() { return cycle; },
+        run(ms) {
+          if (stopped) return true;
+          const t0 = Date.now();
+          while (Date.now() - t0 < ms) {
+            if (pipe.run(Math.max(10, ms - (Date.now() - t0)))) { endCycle(); startCycle(); }
+          }
+          return false;
+        },
+        // stop and keep the best map (finishing the current cycle quickly if there is none yet)
+        stop() {
+          if (!best) {
+            let guard = 0;
+            while (pipe.phase !== "done" && guard++ < 50) { pipe.finishNow(); pipe.run(200); }
+            endCycle();
+          }
+          stopped = true;
+        },
+        finishNow() { this.stop(); },
+        takeImproved() { const b = improved ? best : null; improved = false; return b; },
+        get best() { return best; },
+        assignment() { return stopped ? best.assign : pipe.assignment(); },
+        report(full) {
+          if (stopped) return Object.assign({}, best.report, { endless: { cycle, bestCycle: best.cycle, stopped: true } });
+          const r = pipe.report(full);
+          r.stage = pipe.stage; r.useCoarse = pipe.useCoarse;
+          r.endless = { cycle, bestCycle: best ? best.cycle : 0 };
+          return r;
+        },
+      };
+    }
+
+    return { makeRng, buildGraph, aggregate, createEngine, createPipeline, createEndless, prepareGraph };
   }
 
   // Web Worker entry point. Stringified and run from a Blob URL, so it works from file:// too.
@@ -932,7 +1045,10 @@
       const done = pipe.phase === "done";
       const rep = pipe.report(done);
       const a = Int32Array.from(pipe.assignment());
-      self.postMessage({ type, report: rep, assign: a }, [a.buffer]);
+      const msg = { type, report: rep, assign: a }, transfer = [a.buffer];
+      const b = pipe.takeImproved ? pipe.takeImproved() : null;
+      if (b) { msg.best = { report: b.report, assign: Int32Array.from(b.assign), cycle: b.cycle }; transfer.push(msg.best.assign.buffer); }
+      self.postMessage(msg, transfer);
     }
     function loop() {
       timer = null;
@@ -949,7 +1065,7 @@
         if (msg.cmd === "init") {
           running = false;
           const g = lib.buildGraph(msg.graph);
-          pipe = lib.createPipeline(g, msg.graph.group, msg.opts);
+          pipe = msg.opts.endless ? lib.createEndless(g, msg.graph.group, msg.opts) : lib.createPipeline(g, msg.graph.group, msg.opts);
           pipe.init();
           post("ready");
         } else if (msg.cmd === "run") {

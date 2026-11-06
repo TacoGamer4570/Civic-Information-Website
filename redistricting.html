@@ -137,6 +137,11 @@
           </div>
         </details>
 
+        <label class="rd-super">
+          <input type="checkbox" id="rd-super">
+          <span><strong>Superthinking</strong><small>Runs in cycles (balance, goal, compactness, census blocks) over and over, keeping the best map, until you press Stop. Use it to squeeze out the most extreme result.</small></span>
+        </label>
+
         <div class="rd-actions">
           <button type="submit" class="btn btn-primary btn-lg" id="rd-run" disabled>Draw the map</button>
           <div class="rd-actions-row">
@@ -179,6 +184,7 @@
           </ol>
           <div class="rd-progress"><span id="rd-progress-bar"></span></div>
           <p class="rd-status-text" id="rd-status-text">Pick your settings and press <strong>Draw the map</strong>.</p>
+          <label class="rd-live small" id="rd-live-wrap" hidden><input type="checkbox" id="rd-live"> Watch the live search (the map shows the best map so far otherwise)</label>
         </div>
       </section>
     </div>
@@ -250,6 +256,9 @@
         <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>
       <p>Last, every district is checked with a graph search to confirm it's one connected set of blocks.</p>
+
+      <h3>Superthinking</h3>
+      <p>With Superthinking on, the whole sequence runs again and again. Each finished cycle is compared with the best map so far: first on your goal (seats won, or how close to your target split), then on compactness (or population balance, if you're ignoring compactness). Only maps within your population tolerance and fully connected count. Most cycles start from the best map and push further, with gerrymander goals always aiming one seat higher, and later cycles search harder. Every fourth cycle starts from a fresh random map to get out of dead ends. It never stops on its own, even if your goal can't be reached; press <strong>Stop &amp; keep best</strong>.</p>
 
       <h3>What it can't do</h3>
       <ul>

@@ -133,6 +133,31 @@ test("two-stage pipeline (groups, then units) keeps the seat result and contigui
   assert.ok(r.maxDev <= 0.01 + 1e-9, String(r.maxDev));
 });
 
+test("superthinking: cycles keep the best map, never get worse, and stop cleanly", () => {
+  const raw = grid(30, 30);
+  const e = RE.createEndless(G, raw.group, { k: 6, mode: "maxD", margin: 0, tol: 0.02, seed: 9, searchSteps: 1500, coarsePolishSteps: 1500, finePolishSteps: 1500, endless: true });
+  e.init();
+  let last = null, improvements = 0;
+  for (let i = 0; i < 400 && e.cycle < 6; i++) {
+    assert.strictEqual(e.run(200), false, "never finishes on its own");
+    const b = e.takeImproved();
+    if (b) {
+      improvements++;
+      if (last) assert.ok(b.report.seats.safeD >= last.report.seats.safeD, "seat count never drops");
+      last = b;
+    }
+  }
+  assert.ok(e.cycle >= 6, "ran several cycles");
+  assert.ok(improvements >= 1);
+  e.stop();
+  assert.strictEqual(e.phase, "done");
+  const r = e.report(true);
+  assert.ok(r.contiguity.ok);
+  assert.ok(r.maxDev <= 0.02 + 1e-9);
+  assert.strictEqual(r.seats.safeD, last.report.seats.safeD);
+  assert.ok(connectedParts(G, e.assignment(), 6).every((c) => c === 1));
+});
+
 console.log("state data files");
 const EXPECT = {
   TX: { pop: 29145505, seats: 38, share: 0.4305 },

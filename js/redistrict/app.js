@@ -41,6 +41,7 @@
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
     results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
     csv: $("rd-csv"), png: $("rd-png"),
+    superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
   };
 
   const S = {
@@ -219,6 +220,7 @@
     return {
       k, mode: m, seed,
       compact: el.form.elements.compact.value !== "0",
+      endless: el.superOn.checked,
       tol: +el.tol.value,
       targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" ? 0 : +el.margin.value,
@@ -235,6 +237,7 @@
     if (S.worker) { S.worker.terminate(); S.worker = null; }
     S.running = false; S.paused = false;
     el.pause.disabled = true; el.skip.disabled = true; el.pause.textContent = "Pause";
+    el.skip.textContent = "Skip phase";
     el.run.textContent = "Draw the map";
   }
   function start() {
@@ -248,8 +251,11 @@
     S.running = true;
     S.prevDistColor = [];
     S.assign = null;
+    S.best = null; S.liveReport = null;
     el.run.textContent = "Start over";
     el.pause.disabled = false; el.skip.disabled = false;
+    el.skip.textContent = opts.endless ? "Stop & keep best" : "Skip phase";
+    el.liveWrap.hidden = !opts.endless;
     setStatus("init", 0, "Building a random starting map…");
     if (S.colorMode === "precinct") setColorMode("lean");
     w.onmessage = (ev) => onWorker(ev.data);
@@ -258,12 +264,16 @@
   }
   function onWorker(msg) {
     if (msg.type === "error") { setStatus("error", 0, escapeHtml(msg.message)); stopWorker(); return; }
-    S.assign = msg.assign;
-    S.report = msg.report;
+    const final = msg.type === "done";
+    S.liveReport = msg.report;
+    S.liveAssign = msg.assign;
+    let fresh = false;
+    if (msg.best) { S.best = msg.best; fresh = true; }
+    // superthinking shows the best map so far unless you're watching the live search
+    showLiveOrBest(final);
     if (msg.type === "ready") { S.worker.postMessage({ cmd: "run" }); renderLegend(); }
     const now = performance.now();
-    const final = msg.type === "done";
-    if (final || msg.type === "ready" || msg.type === "paused" || now - S.lastDraw > 300) {
+    if (final || fresh || msg.type === "ready" || msg.type === "paused" || (S.assign === S.liveAssign && now - S.lastDraw > 300)) {
       S.lastDraw = now;
       renderPlan();
       renderResults();
@@ -274,6 +284,11 @@
       el.pause.disabled = true; el.skip.disabled = true;
       el.run.textContent = "Draw another";
     }
+  }
+
+  function showLiveOrBest(final) {
+    if (S.opts && S.opts.endless && S.best && !final && !el.live.checked) { S.assign = S.best.assign; S.report = S.best.report; }
+    else { S.assign = S.liveAssign; S.report = S.liveReport; }
   }
 
   // ---------- status ----------
@@ -298,9 +313,40 @@
     el.bar.style.width = Math.round(progress * 100) + "%";
     el.statusText.innerHTML = html;
   }
+  function bestSummary(b) {
+    const r = b.report, k = r.k, m = S.opts.mode, mg = S.opts.margin;
+    let s;
+    if (m === "maxD") s = r.seats.safeD + " Democratic seats" + (mg ? " (won by " + mg + "+)" : "");
+    else if (m === "maxR") s = r.seats.safeR + " Republican seats" + (mg ? " (won by " + mg + "+)" : "");
+    else if (m === "competitive") s = r.seats.comp + " competitive seats";
+    else s = r.seats.winD + " D – " + (k - r.seats.winD) + " R";
+    if (S.opts.compact) s += ", compactness " + r.meanPP.toFixed(3);
+    return s + " (cycle " + b.cycle + ")";
+  }
   function renderStatus(type) {
-    const r = S.report;
+    const r = S.opts && S.opts.endless ? S.liveReport : S.report;
     if (!r) return;
+    if (S.opts.endless && r.endless) {
+      const best = S.best ? bestSummary(S.best) : "none yet";
+      let text;
+      if (r.phase === "done") {
+        const c = r.contiguity;
+        text = "<strong>Stopped after " + r.endless.cycle + " cycle" + (r.endless.cycle === 1 ? "" : "s") + ".</strong> Showing the best map: " + escapeHtml(best) + ". " +
+          (c && c.ok ? "All " + fmt(r.k) + " districts verified contiguous." : "Contiguity check failed.") + " <span class='muted'>seed " + S.seedUsed + "</span>";
+        setStatus("done", 1, text);
+      } else {
+        const unit = r.stage === "precinct" ? "precincts" : "census blocks";
+        const goalText = r.goal.text ? r.goal.text[0].toLowerCase() + r.goal.text.slice(1) : "";
+        const now = type === "paused" ? "paused" : r.stage === "block" && (r.phase === "polish" || r.phase === "final") && r.useCoarse
+          ? "refining with census blocks"
+          : ({ init: "starting", balance: "balancing population", search: escapeHtml(goalText), polish: "making it compact", final: "final balancing" }[r.phase] || "") + " (moving " + unit + ")";
+        text = "<strong>Superthinking · cycle " + r.endless.cycle + "</strong> · best so far: " + escapeHtml(best) + "<br><span class='muted'>Now " + now + ". Press <em>Stop &amp; keep best</em> whenever you like.</span>";
+        setStatus(uiStep(r), r.phaseProgress, text);
+      }
+      el.phases.querySelector('[data-phase="search"]').classList.toggle("is-skipped", S.opts.mode === "neutral");
+      el.phases.querySelector('[data-phase="polish"]').classList.toggle("is-skipped", !S.opts.compact);
+      return;
+    }
     const step = uiStep(r);
     const steps = fmt(r.step) + " steps · " + pct(r.acceptRate, 0) + " of moves accepted";
     const unit = r.stage === "precinct" ? "precincts" : "census blocks";
@@ -595,6 +641,7 @@
     el.pause.textContent = S.paused ? "Resume" : "Pause";
   });
   el.skip.addEventListener("click", () => { if (S.worker) S.worker.postMessage({ cmd: "finish" }); });
+  el.live.addEventListener("change", () => { if (!S.liveReport) return; showLiveOrBest(S.liveReport.phase === "done"); renderPlan(); renderResults(); });
   document.querySelectorAll("#rd-color input").forEach((r) => r.addEventListener("change", () => setColorMode(r.value)));
   $("rd-zoom-in").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1.6));
   $("rd-zoom-out").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1 / 1.6));

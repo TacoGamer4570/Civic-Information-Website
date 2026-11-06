@@ -61,6 +61,8 @@ The chain runs in a Web Worker:
 3. **Make it compact.** The seat result is locked while the chain improves Polsby–Popper scores. Skipped, and compactness left out of every score, when you choose *Ignore compactness*.
 4. **Refine with census blocks.** Steps 1–3 move whole precincts (aggregated from blocks) for speed; then the map switches to individual blocks to balance population tightly and smooth borders, seat result still locked. With very many districts (fewer than 8 precincts each), every step runs on blocks.
 
+**Superthinking** runs that whole sequence in cycles, forever, until you press *Stop & keep best*. Each cycle is scored against the best map so far (first your goal, then compactness, or population balance if compactness is ignored; only maps within your tolerance and fully contiguous count). Most cycles start from the best map and push further, with gerrymander goals always aiming one seat higher and later cycles searching harder. Every fourth cycle restarts from a fresh random map. The map shows the best result so far, or the live search if you tick *Watch the live search*.
+
 Moves are ReCom (merge two districts, cut a random spanning tree into equal halves) and single-unit flips that are only allowed when the district stays connected. Every district is checked for contiguity at the block level at the end. The **Download assignments** button saves a standard block-assignment CSV (`GEOID20,District`).
 
 ### Rebuilding the data
