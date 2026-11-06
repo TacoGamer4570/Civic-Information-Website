@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Redistricting Simulator — ballot/decoded</title>
-  <meta name="description" content="Draw congressional maps for Texas, California, or Pennsylvania with a Markov chain Monte Carlo algorithm, using real precincts, 2024 presidential results, and 2020 Census population. Fair, proportional, or gerrymandered: you pick.">
+  <meta name="description" content="Draw congressional maps for Texas, California, or Pennsylvania with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
   <meta name="theme-color" content="#FFF7EA">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='14' fill='%23D4FF3F' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='%23141414' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,9 +30,9 @@
 
   <main id="main" tabindex="-1">
     <section class="rd-hero">
-      <p class="eyebrow"><span class="sticker sticker-tilt">MCMC</span> <span class="mono small">real precincts · 2024 presidential results · 2020 Census</span></p>
+      <p class="eyebrow"><span class="sticker sticker-tilt">MCMC</span> <span class="mono small">2020 census blocks · 2024 presidential results</span></p>
       <h1>redistricting <span class="serif">simulator</span></h1>
-      <p class="lede">Pick a state and a goal. A Markov chain Monte Carlo algorithm reshapes the congressional map one move at a time, balancing population first, then chasing your partisan target, then making the districts as compact as it can. Every district is checked for contiguity.</p>
+      <p class="lede">Pick a state, a number of districts, and a goal. A Markov chain Monte Carlo algorithm reshapes the map one move at a time: it balances population, chases your partisan target, makes the districts compact, then refines every border down to individual census blocks. Every district is checked for contiguity.</p>
     </section>
 
     <div class="rd-layout">
@@ -44,13 +44,13 @@
             <label><input type="radio" name="state" value="CA"><span>California<small>52 seats</small></span></label>
             <label><input type="radio" name="state" value="PA"><span>Pennsylvania<small>17 seats</small></span></label>
           </div>
-          <p class="rd-statline mono small" id="rd-statline">Loading precincts…</p>
+          <p class="rd-statline mono small" id="rd-statline">Loading census blocks…</p>
         </fieldset>
 
         <div class="rd-field">
           <label class="rd-label" for="rd-k">Number of districts</label>
           <div class="rd-inline">
-            <input type="number" id="rd-k" min="2" max="80" value="38" inputmode="numeric">
+            <input type="number" id="rd-k" min="2" value="38" inputmode="numeric">
             <button type="button" class="link-btn small" id="rd-k-reset">use real count</button>
           </div>
           <p class="hint small muted" id="rd-k-hint"></p>
@@ -90,13 +90,14 @@
           <div class="rd-field">
             <label class="rd-label" for="rd-tol">Population tolerance</label>
             <select id="rd-tol">
-              <option value="0.0025">±0.25% (very strict)</option>
-              <option value="0.005" selected>±0.5%</option>
+              <option value="0.00001" data-note="(near-exact)">±0.001%</option>
+              <option value="0.0001">±0.01%</option>
+              <option value="0.001" selected>±0.1%</option>
+              <option value="0.005">±0.5%</option>
               <option value="0.01">±1%</option>
-              <option value="0.02">±2%</option>
-              <option value="0.05">±5% (state-legislative style)</option>
+              <option value="0.05" data-note="(state-legislative style)">±5%</option>
             </select>
-            <p class="hint small muted">Real congressional maps balance to the person using census blocks. Whole precincts can usually get within ±0.5%.</p>
+            <p class="hint small muted">How far any district may be from the ideal size. Real congressional maps are within a few people. Tighter takes longer, and with many small districts the tightest settings may not be reachable.</p>
           </div>
           <div class="rd-field">
             <label class="rd-label" for="rd-county">Keep counties whole</label>
@@ -148,12 +149,12 @@
             </div>
           </div>
           <div class="rd-mapwrap">
-            <canvas id="rd-map" aria-label="Map of precincts and districts" role="img"></canvas>
+            <canvas id="rd-map" aria-label="Map of census blocks and districts" role="img"></canvas>
             <div class="rd-tip" id="rd-tip" hidden></div>
-            <div class="rd-loading" id="rd-loading"><span class="mono">loading precincts…</span></div>
+            <div class="rd-loading" id="rd-loading"><span class="mono">loading census blocks…</span></div>
           </div>
           <div class="rd-legend small" id="rd-legend"></div>
-          <p class="rd-maphint mono small muted">scroll or pinch to zoom · drag to pan · hover a precinct for details</p>
+          <p class="rd-maphint mono small muted">scroll or pinch to zoom · drag to pan · hover for block details</p>
         </div>
 
         <div class="card rd-status" id="rd-status" aria-live="polite">
@@ -161,6 +162,7 @@
             <li data-phase="balance"><span class="rd-pn">1</span>Balance population</li>
             <li data-phase="search"><span class="rd-pn">2</span>Hit the partisan goal</li>
             <li data-phase="polish"><span class="rd-pn">3</span>Make it compact</li>
+            <li data-phase="refine"><span class="rd-pn">4</span>Refine with census blocks</li>
             <li data-phase="done"><span class="rd-pn">✓</span>Verify</li>
           </ol>
           <div class="rd-progress"><span id="rd-progress-bar"></span></div>
@@ -190,7 +192,7 @@
         <div class="rd-tablewrap">
           <table class="rd-table" id="rd-table">
             <thead>
-              <tr><th scope="col">District</th><th scope="col">Population</th><th scope="col">Deviation</th><th scope="col">Harris</th><th scope="col">Trump</th><th scope="col">Margin</th><th scope="col">Compactness</th><th scope="col">Precincts</th><th scope="col">Counties</th></tr>
+              <tr><th scope="col">District</th><th scope="col">Population</th><th scope="col">Deviation</th><th scope="col">Harris</th><th scope="col">Trump</th><th scope="col">Margin</th><th scope="col">Compactness</th><th scope="col">Blocks</th><th scope="col">Counties</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -202,7 +204,7 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <p><strong>Data.</strong> 2024 presidential results by precinct from <a href="https://github.com/nytimes/presidential-precinct-map-2024" target="_blank" rel="noopener">The New York Times</a>. Population from the 2020 Census redistricting file (P.L. 94-171), with each census block assigned to the precinct it falls in.</p>
+      <p><strong>Data.</strong> 2024 presidential results by precinct from <a href="https://github.com/nytimes/presidential-precinct-map-2024" target="_blank" rel="noopener">The New York Times</a>. Population and census block shapes from the 2020 Census (P.L. 94-171 and TIGER/Line). Votes are reported by precinct, so each block's votes are estimated by splitting its precinct's result by voting-age population.</p>
       <p class="mono small">This is a simulator. Real maps must also follow the Voting Rights Act and state law, which this tool doesn't model.</p>
     </div>
   </footer>
@@ -213,32 +215,33 @@
       <h2 id="rd-method-title">how the simulator works</h2>
 
       <h3>The building blocks</h3>
-      <p>Each state is split into precincts (about 9,700 in Texas, 18,500 in California, and 9,100 in Pennsylvania). A district is a group of precincts. Each precinct carries three facts:</p>
+      <p>The map is made of 2020 Census blocks, the smallest areas the Census counts: about 669,000 in Texas, 520,000 in California, and 337,000 in Pennsylvania. Each block carries:</p>
       <ul>
-        <li><strong>Population</strong> from the 2020 Census. Every census block is placed in the precinct that contains it.</li>
-        <li><strong>Votes</strong> for Harris and Trump in 2024.</li>
-        <li><strong>Neighbors</strong>: the precincts it shares a border with, and how long that border is. A few islands are linked to the nearest precinct across the water.</li>
+        <li><strong>Population</strong>, the exact 2020 Census count.</li>
+        <li><strong>Votes</strong> for Harris and Trump in 2024, estimated. Results are only reported by precinct, so each precinct's votes are split among its blocks by voting-age population.</li>
+        <li><strong>Neighbors</strong>: the blocks it shares a border with, and how long that border is, straight from the Census's own map. The rare island with no water block next to it is linked to the nearest block.</li>
       </ul>
 
       <h3>The algorithm (MCMC)</h3>
-      <p>It starts from a random map made by cutting random spanning trees into equal-population pieces. It then proposes thousands of small changes, two kinds at random:</p>
+      <p>It starts from a random map made by repeatedly cutting random spanning trees in half. It then proposes huge numbers of small changes, two kinds at random:</p>
       <ul>
-        <li><strong>ReCom</strong>: merge two neighboring districts, draw a random spanning tree over their precincts, and cut it into two equal-population halves. Both halves are connected by construction.</li>
-        <li><strong>Flip</strong>: move one precinct on a border into the next district. The move is only allowed if the district it leaves stays in one piece.</li>
+        <li><strong>ReCom</strong>: merge two neighboring districts, draw a random spanning tree over them, and cut it into two equal-population halves. Both halves are connected by construction.</li>
+        <li><strong>Flip</strong>: move one piece of a border into the next district. The move is only allowed if the district it leaves stays in one piece.</li>
       </ul>
       <p>Each change gets a score. Better changes are always kept. Worse ones are sometimes kept, more often early on, so the chain can escape dead ends (this is the Metropolis rule, used as simulated annealing).</p>
 
-      <h3>The three phases</h3>
+      <h3>The phases</h3>
       <ol>
         <li><strong>Balance population</strong> until every district is within your tolerance of the ideal size.</li>
         <li><strong>Hit the partisan goal.</strong> The score measures how far the map is from the target seat split, counting a seat only if it's won by your safe margin. For "gerrymander" goals the target keeps rising until the chain can't reach the next seat.</li>
         <li><strong>Make it compact.</strong> The seat result is locked in, and the chain minimizes total district "roundness" cost (Polsby–Popper: 1.0 is a circle, lower is more stretched), with a penalty for splitting counties if you asked for one.</li>
+        <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>
-      <p>Last, every district is checked with a graph search to confirm it's one connected piece.</p>
+      <p>Last, every district is checked with a graph search to confirm it's one connected set of blocks.</p>
 
       <h3>What it can't do</h3>
       <ul>
-        <li>Precincts aren't divisible, so population can't be balanced to the exact person the way real congressional maps are.</li>
+        <li>Block-level votes are estimates. Two blocks in the same precinct are assumed to vote alike.</li>
         <li>"Seats" here mean who carried the district in the 2024 presidential race. Real House races differ.</li>
         <li>It doesn't model the Voting Rights Act, communities of interest, or incumbents.</li>
         <li>Results vary run to run. That's the point of a random algorithm: try a few seeds.</li>

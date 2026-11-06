@@ -46,28 +46,29 @@ Most fields aren't final yet. Every candidate is tagged **running**, **expected 
 
 ## Redistricting simulator
 
-`redistricting.html` draws congressional maps for **Texas, California, and Pennsylvania** with Markov chain Monte Carlo, using real precincts:
+`redistricting.html` draws maps for **Texas, California, and Pennsylvania** with Markov chain Monte Carlo, built from **2020 Census blocks** (669k in TX, 520k in CA, 337k in PA):
 
-- **Population:** 2020 Census block counts (P.L. 94-171), each block assigned to the precinct that contains it. Totals match the census exactly.
-- **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)).
-- **Map:** precinct shapes and a neighbor graph with shared-border lengths.
+- **Population:** exact 2020 Census block counts (P.L. 94-171).
+- **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)), split to the blocks inside each precinct by voting-age population. Block votes are estimates; statewide totals match the precinct data exactly.
+- **Map:** block adjacency and shared-border lengths straight from the Census's TIGER/Line topology, plus "id images" of each state (each pixel = the block under it) for fast drawing, with sharper tiles loaded on zoom.
 
-You choose the number of districts and a goal: fair & compact, proportional, an exact seat split, a max-Democratic or max-Republican gerrymander, or as many competitive seats as possible. You also set a safe-seat margin, population tolerance, and how hard to avoid county splits.
+You choose any number of districts (2 up to one per populated block) and a goal: fair & compact, proportional, an exact seat split, a max-Democratic or max-Republican gerrymander, or as many competitive seats as possible. You also set a safe-seat margin, population tolerance (down to ±0.001%), and how hard to avoid county splits.
 
-The chain runs in a Web Worker in three phases:
+The chain runs in a Web Worker:
 
-1. **Balance population** to within your tolerance.
+1. **Balance population.**
 2. **Hit the partisan goal.** Gerrymander goals keep raising the target until the next seat can't be reached.
 3. **Make it compact.** The seat result is locked while the chain improves Polsby–Popper scores.
+4. **Refine with census blocks.** Steps 1–3 move whole precincts (aggregated from blocks) for speed; then the map switches to individual blocks to balance population tightly and smooth borders, seat result still locked. With very many districts (fewer than 8 precincts each), every step runs on blocks.
 
-Moves are ReCom (merge two districts, cut a random spanning tree into equal halves) and single-precinct flips that are only allowed when the district stays connected. Every district is checked for contiguity at the end. Islands are linked to the nearest precinct across the water.
+Moves are ReCom (merge two districts, cut a random spanning tree into equal halves) and single-unit flips that are only allowed when the district stays connected. Every district is checked for contiguity at the block level at the end. The **Download assignments** button saves a standard block-assignment CSV (`GEOID20,District`).
 
-### Rebuilding the precinct data
+### Rebuilding the data
 
-The files in `data/redistricting/` are generated. To rebuild them (downloads ~250 MB from `int.nyt.com` and `www2.census.gov`):
+The files in `data/redistricting/` are generated (about 52 MB). To rebuild them (downloads ~1.8 GB from `int.nyt.com` and `www2.census.gov`; Texas needs the most memory):
 
 ```bash
-pip install shapely pyproj numpy geopandas
+pip install shapely pyproj numpy scipy geopandas rasterio
 python3 tools/redistricting/build_data.py TX CA PA
 ```
 
@@ -79,7 +80,7 @@ redistricting.html      redistricting simulator page
 js/redistrict/engine.js MCMC engine (runs in a Web Worker and in node)
 js/redistrict/map.js    canvas precinct/district map
 js/redistrict/app.js    simulator UI
-data/redistricting/     generated precinct graphs (tx.js, ca.js, pa.js)
+data/redistricting/     generated census-block data (tx.js, ca.js, pa.js + map tiles)
 tools/redistricting/    data build script
 css/styles.css          all styles (light/dark, mobile, print-the-ballot)
 js/data/questions.js    the 22 quiz questions
@@ -88,6 +89,7 @@ js/scoring.js           scores, matching, yes/no logic, share links
 js/app.js               UI
 tests/scoring.test.js   node tests (voter guide)
 tests/redistrict.test.js node tests (redistricting engine + data)
+tests/load-state.js     node helper that decodes a state file
 ```
 
 ## Updating race data

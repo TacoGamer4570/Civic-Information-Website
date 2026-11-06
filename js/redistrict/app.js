@@ -1,12 +1,13 @@
-/* Redistricting simulator page: settings, worker lifecycle, map + results. */
+/* Redistricting simulator page: settings, data loading, worker lifecycle, map + results. */
 (function () {
   "use strict";
 
   const STATES = { TX: { name: "Texas", seats: 38 }, CA: { name: "California", seats: 52 }, PA: { name: "Pennsylvania", seats: 17 } };
+  // steps for the partisan search; polishing steps per precinct (first stage) and per block (second stage)
   const EFFORT = {
-    quick: { search: 8000, polishPer: 15 },
-    standard: { search: 25000, polishPer: 50 },
-    thorough: { search: 80000, polishPer: 150 },
+    quick: { search: 8000, coarsePer: 10, finePer: 0.5 },
+    standard: { search: 25000, coarsePer: 30, finePer: 2 },
+    thorough: { search: 80000, coarsePer: 80, finePer: 6 },
   };
   // Categorical slots for district identity (validated palette, light / dark steps).
   const CAT_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"];
@@ -23,6 +24,7 @@
     { min: -30, color: "#d9473f", label: "R +15" },
     { min: -Infinity, color: "#9c2a23", label: "R +30" },
   ];
+  const TYPES = { u32: Uint32Array, i32: Int32Array, u16: Uint16Array, f32: Float32Array, d32: Int32Array };
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -38,9 +40,9 @@
   };
 
   const S = {
-    st: null, data: null, map: null, worker: null, running: false, paused: false,
-    assign: null, report: null, colorMode: "lean", distColor: [], prevDistColor: [],
-    hoverDistrict: -1, lastDraw: 0, seedUsed: null, totals: null, workerUrl: null,
+    st: null, D: null, map: null, worker: null, running: false, paused: false,
+    assign: null, report: null, colorMode: "precinct", prevDistColor: [],
+    hoverDistrict: -1, lastDraw: 0, seedUsed: null, workerUrl: null, opts: null,
   };
 
   // ---------- helpers ----------
@@ -51,7 +53,8 @@
     if (a < 0.05) return "even";
     return (m > 0 ? "D+" : "R+") + a.toFixed(1);
   }
-  function leanColor(m) { for (const b of LEAN) if (m >= b.min) return b.color; return LEAN[LEAN.length - 1].color; }
+  function leanIndex(m) { for (let i = 0; i < LEAN.length; i++) if (m >= LEAN[i].min) return i; return LEAN.length - 1; }
+  function leanColor(m) { return LEAN[leanIndex(m)].color; }
   function isDark() {
     const t = document.documentElement.getAttribute("data-theme");
     if (t) return t === "dark";
@@ -60,61 +63,121 @@
   function resolveVar(c) { return c.startsWith("var(") ? getComputedStyle(el.canvas).getPropertyValue(c.slice(4, -1)).trim() : c; }
   function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
+  // ---------- decoding ----------
+  function b64bytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function inflate(b64) {
+    const stream = new Blob([b64bytes(b64)]).stream().pipeThrough(new DecompressionStream("deflate"));
+    return new Response(stream).arrayBuffer();
+  }
+  async function unpack(type, b64) {
+    const a = new TYPES[type](await inflate(b64));
+    if (type === "d32") for (let i = 1; i < a.length; i++) a[i] += a[i - 1];
+    return a;
+  }
+  // id images are row-delta coded
+  async function unpackIds(b64, w) {
+    const a = new Uint32Array(await inflate(b64));
+    for (let i = 0; i < a.length; i++) if (i % w) a[i] = (a[i] + a[i - 1]) >>> 0;
+    return a;
+  }
+
   // ---------- loading data ----------
-  function loadState(st) {
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src; s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  async function loadState(st) {
     stopWorker();
     S.st = st;
     S.assign = null; S.report = null;
     el.results.hidden = true;
     el.run.disabled = true;
     el.loading.hidden = false;
-    el.statline.textContent = "Loading precincts…";
-    setStatus("idle", 0, "Loading " + STATES[st].name + " precincts…");
-    const have = window.REDISTRICT_DATA && window.REDISTRICT_DATA[st];
-    if (have) return onData(st);
-    const s = document.createElement("script");
-    s.src = "data/redistricting/" + st.toLowerCase() + ".js";
-    s.onload = () => { if (S.st === st) onData(st); };
-    s.onerror = () => { el.loading.innerHTML = '<span class="mono">Couldn\'t load the precinct file. Try reloading.</span>'; };
-    document.head.appendChild(s);
+    el.loading.innerHTML = '<span class="mono">loading ' + STATES[st].name + ' census blocks…</span>';
+    el.statline.textContent = "Loading census blocks…";
+    setStatus("idle", 0, "Loading " + STATES[st].name + "…");
+    try {
+      if (!(window.REDISTRICT_DATA && window.REDISTRICT_DATA[st])) await loadScript("data/redistricting/" + st.toLowerCase() + ".js");
+      if (S.st !== st) return;
+      el.loading.innerHTML = '<span class="mono">unpacking…</span>';
+      const meta = window.REDISTRICT_DATA[st];
+      const names = Object.keys(meta.arrays);
+      const arrs = await Promise.all(names.map((k) => unpack(meta.arrays[k][0], meta.arrays[k][1])));
+      const A = {};
+      names.forEach((k, i) => { A[k] = arrs[i]; });
+      const overview = await unpackIds(meta.raster.overview.data, meta.raster.overview.w);
+      if (S.st !== st) return;
+      onData(st, meta, A, overview);
+    } catch (err) {
+      el.loading.innerHTML = '<span class="mono">Couldn\'t load the census data (' + escapeHtml(err && err.message || err) + '). This page needs a recent Chrome, Edge, Firefox, or Safari.</span>';
+    }
   }
 
-  function onData(st) {
-    const d = window.REDISTRICT_DATA[st];
-    S.data = d;
-    let pop = 0, dem = 0, rep = 0;
-    S.margin = new Float64Array(d.n);
-    for (let u = 0; u < d.n; u++) {
-      pop += d.pop[u]; dem += d.dem[u]; rep += d.rep[u];
-      const t = d.dem[u] + d.rep[u];
-      S.margin[u] = t > 0 ? (100 * (d.dem[u] - d.rep[u])) / t : 0;
-    }
-    S.totals = { pop, dem, rep, share: dem / (dem + rep) };
-    el.statline.innerHTML = fmt(d.n) + " precincts · " + fmt(pop) + " people<br>2024: Harris " + pct(dem / (dem + rep)) + " · Trump " + pct(rep / (dem + rep)) + " (two-party)";
-    el.k.value = d.seats;
+  function onData(st, meta, A, overview) {
+    const graph = window.RedistrictEngine.prepareGraph(meta, A);
+    let pop = 0, dem = 0, rep = 0, populated = 0;
+    for (let u = 0; u < meta.n; u++) { pop += A.pop[u]; if (A.pop[u] > 0) populated++; }
+    for (let p = 0; p < meta.precincts.dem.length; p++) { dem += meta.precincts.dem[p]; rep += meta.precincts.rep[p]; }
+    const np = meta.precincts.id.length;
+    const pmargin = new Float64Array(np);
+    for (let p = 0; p < np; p++) { const t = meta.precincts.dem[p] + meta.precincts.rep[p]; pmargin[p] = t > 0 ? (100 * (meta.precincts.dem[p] - meta.precincts.rep[p])) / t : 0; }
+    S.D = { meta, A, overview, raster: meta.raster, graph, n: meta.n, pop, populated, share: dem / (dem + rep), pmargin, np, colors: new Uint32Array(meta.n) };
+    el.statline.innerHTML = fmt(meta.n) + " census blocks · " + fmt(pop) + " people<br>2024: Harris " + pct(dem / (dem + rep)) + " · Trump " + pct(rep / (dem + rep)) + " (two-party)";
+    el.k.value = meta.seats;
+    el.target.dataset.touched = "";
     syncK();
-    if (S.map) S.map.canvas.replaceWith(S.map.canvas.cloneNode(false));
-    el.canvas = $("rd-map");
-    S.map = new window.RedistrictMap(el.canvas, d, { onHover: onHover });
+    // fresh canvas (drops old listeners)
+    const fresh = el.canvas.cloneNode(false);
+    el.canvas.replaceWith(fresh);
+    el.canvas = fresh;
+    window.REDISTRICT_TILE = function (tst, r, c, b64) {
+      if (tst !== S.st || !S.map) return;
+      unpackIds(b64, meta.raster.detail.tile).then((ids) => { if (tst === S.st && S.map) S.map.addTile(r, c, ids); });
+    };
+    S.map = new window.RedistrictMap(el.canvas, { raster: meta.raster, overview }, {
+      onHover: onHover,
+      loadTile: (r, c) => loadScript("data/redistricting/" + st.toLowerCase() + "/t" + r + "_" + c + ".js").catch(() => {}),
+    });
     el.loading.hidden = true;
     el.run.disabled = false;
-    setColorMode("precinct", true);
+    setColorMode("precinct");
     setStatus("idle", 0, "Showing 2024 results by precinct. Pick your settings and press <strong>Draw the map</strong>.");
   }
 
   // ---------- settings ----------
   function mode() { return el.form.elements.mode.value; }
-  function syncK() {
-    const st = STATES[S.st];
+  function kValue() {
     let k = parseInt(el.k.value, 10);
     if (!(k >= 2)) k = 2;
-    if (k > 80) k = 80;
-    const ideal = S.totals ? S.totals.pop / k : 0;
-    el.kHint.textContent = (k === st.seats ? "Real number of U.S. House seats. " : "Real count: " + st.seats + ". ") + (ideal ? "Ideal district: " + fmt(ideal) + " people." : "");
+    if (S.D && k > S.D.populated) k = S.D.populated;
+    return k;
+  }
+  function syncK() {
+    if (!S.D) return;
+    const real = S.D.meta.seats;
+    const k = kValue();
+    const ideal = S.D.pop / k;
+    let hint = (k === real ? "Real number of U.S. House seats. " : "Real count: " + real + ". ") + "Ideal district: " + fmt(ideal) + " people.";
+    if (k >= 500) hint += " Lots of districts: expect a slower run.";
+    el.kHint.textContent = hint;
     el.target.max = k;
     if (+el.target.value > k) el.target.value = k;
-    if (S.totals && !el.target.dataset.touched) el.target.value = Math.round(k * S.totals.share);
+    if (!el.target.dataset.touched) el.target.value = Math.round(k * S.D.share);
     syncTarget();
+    // show the tolerance in people
+    for (const o of el.tol.options) {
+      const t = +o.value;
+      const people = Math.max(1, Math.round(ideal * t));
+      o.textContent = "±" + +(t * 100).toPrecision(2) + "% (±" + fmt(people) + " " + (people === 1 ? "person" : "people") + ")" + (o.dataset.note ? " " + o.dataset.note : "");
+    }
   }
   function syncTarget() {
     const k = +el.target.max, d = +el.target.value;
@@ -142,7 +205,8 @@
   }
 
   function buildOpts() {
-    const k = Math.max(2, Math.min(80, parseInt(el.k.value, 10) || STATES[S.st].seats));
+    const k = kValue();
+    el.k.value = k;
     const ef = EFFORT[el.effort.value] || EFFORT.standard;
     let seed = parseInt(el.seed.value, 10);
     if (!Number.isFinite(seed)) seed = Math.floor(Math.random() * 1e9);
@@ -151,12 +215,13 @@
     return {
       k, mode: m, seed,
       tol: +el.tol.value,
-      targetD: +el.target.value,
+      targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" ? 0 : +el.margin.value,
       band: m === "competitive" ? +el.margin.value : 5,
       countyWeight: +el.county.value,
       searchSteps: ef.search,
-      polishSteps: Math.round(ef.polishPer * S.data.n),
+      coarsePolishSteps: Math.round(ef.coarsePer * S.D.np),
+      finePolishSteps: Math.round(ef.finePer * S.D.n),
     };
   }
 
@@ -168,7 +233,7 @@
     el.run.textContent = "Draw the map";
   }
   function start() {
-    if (!S.data) return;
+    if (!S.D) return;
     stopWorker();
     const opts = buildOpts();
     S.opts = opts;
@@ -177,18 +242,14 @@
     S.worker = w;
     S.running = true;
     S.prevDistColor = [];
+    S.assign = null;
     el.run.textContent = "Start over";
     el.pause.disabled = false; el.skip.disabled = false;
     setStatus("init", 0, "Building a random starting map…");
-    if (S.colorMode === "precinct") setColorMode("lean", true);
+    if (S.colorMode === "precinct") setColorMode("lean");
     w.onmessage = (ev) => onWorker(ev.data);
     w.onerror = (e) => { setStatus("error", 0, "Something went wrong: " + escapeHtml(e.message || "worker error")); stopWorker(); };
-    const d = S.data;
-    w.postMessage({
-      cmd: "init",
-      graph: { n: d.n, pop: d.pop, dem: d.dem, rep: d.rep, area: d.area, ext: d.ext, county: d.county, edges: d.edges },
-      opts,
-    });
+    w.postMessage({ cmd: "init", graph: S.D.graph, opts });
   }
   function onWorker(msg) {
     if (msg.type === "error") { setStatus("error", 0, escapeHtml(msg.message)); stopWorker(); return; }
@@ -197,10 +258,10 @@
     if (msg.type === "ready") { S.worker.postMessage({ cmd: "run" }); renderLegend(); }
     const now = performance.now();
     const final = msg.type === "done";
-    if (final || msg.type === "ready" || msg.type === "paused" || now - S.lastDraw > 250) {
+    if (final || msg.type === "ready" || msg.type === "paused" || now - S.lastDraw > 300) {
       S.lastDraw = now;
-      renderPlan(final);
-      renderResults(final);
+      renderPlan();
+      renderResults();
     }
     renderStatus(msg.type);
     if (final) {
@@ -211,15 +272,23 @@
   }
 
   // ---------- status ----------
-  const PHASE_ORDER = ["init", "balance", "search", "polish", "final", "done"];
-  function setStatus(phase, progress, html) {
-    const idx = PHASE_ORDER.indexOf(phase);
+  // UI steps: balance, search, shape (precincts), refine (blocks), verify
+  function uiStep(r) {
+    if (!r) return "init";
+    if (r.phase === "done") return "done";
+    if (r.stage === "precinct" || !r.useCoarse) {
+      if (r.phase === "final") return "refine";
+      return r.phase === "polish" ? "polish" : r.phase;
+    }
+    return "refine";
+  }
+  const STEP_ORDER = ["init", "balance", "search", "polish", "refine", "done"];
+  function setStatus(step, progress, html) {
+    const idx = STEP_ORDER.indexOf(step);
     for (const li of el.phases.children) {
-      const p = li.dataset.phase;
-      const pi = PHASE_ORDER.indexOf(p);
-      const cur = phase === p || (p === "polish" && phase === "final");
-      li.classList.toggle("is-active", cur && phase !== "done");
-      li.classList.toggle("is-done", idx > pi && !(p === "polish" && phase === "final") || phase === "done");
+      const pi = STEP_ORDER.indexOf(li.dataset.phase);
+      li.classList.toggle("is-active", step === li.dataset.phase && step !== "done");
+      li.classList.toggle("is-done", idx > pi || step === "done");
     }
     el.bar.style.width = Math.round(progress * 100) + "%";
     el.statusText.innerHTML = html;
@@ -227,39 +296,37 @@
   function renderStatus(type) {
     const r = S.report;
     if (!r) return;
-    const skipSearch = S.opts.mode === "neutral";
+    const step = uiStep(r);
     const steps = fmt(r.step) + " steps · " + pct(r.acceptRate, 0) + " of moves accepted";
+    const unit = r.stage === "precinct" ? "precincts" : "census blocks";
     let text;
     if (r.phase === "done") {
       const c = r.contiguity;
-      text = (c.ok ? "<strong>Done.</strong> All " + r.k + " districts verified contiguous." : "<strong>Done</strong>, but " + c.broken.length + " district(s) failed the contiguity check.") + " <span class='muted'>" + steps + " · seed " + S.seedUsed + "</span>";
+      text = (c && c.ok ? "<strong>Done.</strong> All " + fmt(r.k) + " districts verified contiguous at the census-block level." : "<strong>Done</strong>, but " + (c ? c.broken.length : "?") + " district(s) failed the contiguity check.") + " <span class='muted'>" + steps + " · seed " + S.seedUsed + "</span>";
     } else if (type === "paused") {
       text = "<strong>Paused.</strong> " + escapeHtml(r.goal.text || "") + " <span class='muted'>" + steps + "</span>";
     } else {
-      const label = { init: "Starting…", balance: "Balancing population…", search: escapeHtml(r.goal.text) + "…", polish: "Making districts compact (seat result locked)…", final: "Final population balancing…" }[r.phase] || "";
+      const label = {
+        init: "Starting…",
+        balance: "Balancing population (moving " + unit + ")…",
+        search: escapeHtml(r.goal.text) + " (moving " + unit + ")…",
+        polish: r.stage === "precinct" ? "Making districts compact, seat result locked (moving precincts)…" : "Smoothing borders and evening out population, block by block…",
+        final: "Final population balancing, block by block…",
+      }[r.phase] || "";
       text = label + " <span class='muted'>" + steps + "</span>";
     }
-    let phase = r.phase;
-    if (skipSearch && phase === "polish") phase = "polish";
-    setStatus(phase, r.phase === "done" ? 1 : r.phaseProgress, text);
-    if (skipSearch) {
-      const li = el.phases.querySelector('[data-phase="search"]');
-      li.classList.add("is-skipped");
-    } else el.phases.querySelector('[data-phase="search"]').classList.remove("is-skipped");
+    setStatus(step, r.phase === "done" ? 1 : r.phaseProgress, text);
+    el.phases.querySelector('[data-phase="search"]').classList.toggle("is-skipped", S.opts.mode === "neutral");
   }
 
   // ---------- map coloring ----------
-  function districtStats() {
-    return S.report ? S.report.districts : [];
-  }
   function computeDistrictColors() {
     // Greedy graph coloring so neighboring districts never share a color;
     // districts keep their previous color when they can (less flicker).
-    const d = S.data, a = S.assign, k = S.report.k;
+    const g = S.D.graph, a = S.assign, k = S.report.k;
     const nb = Array.from({ length: k }, () => new Set());
-    const E = d.edges;
-    for (let i = 0; i < E.length; i += 3) {
-      const x = a[E[i]], y = a[E[i + 1]];
+    for (let i = 0; i < g.eu.length; i++) {
+      const x = a[g.eu[i]], y = a[g.ev[i]];
       if (x !== y) { nb[x].add(y); nb[y].add(x); }
     }
     const order = Array.from({ length: k }, (_, i) => i).sort((p, q) => nb[q].size - nb[p].size);
@@ -277,46 +344,48 @@
     return col;
   }
   function districtLabels() {
-    const d = S.data, a = S.assign, k = S.report.k;
+    const A = S.D.A, a = S.assign, k = S.report.k, n = S.D.n, q = S.D.raster.q;
     const sx = new Float64Array(k), sy = new Float64Array(k), sw = new Float64Array(k);
-    for (let u = 0; u < d.n; u++) { const w = d.area[u] + 1; sx[a[u]] += d.cx[u] * w; sy[a[u]] += d.cy[u] * w; sw[a[u]] += w; }
-    const best = new Array(k).fill(-1), bestD = new Float64Array(k).fill(Infinity);
-    for (let u = 0; u < d.n; u++) {
-      const di = a[u];
-      const dx = d.cx[u] - sx[di] / sw[di], dy = d.cy[u] - sy[di] / sw[di];
+    for (let u = 0; u < n; u++) { const w = A.area[u] + 1; sx[a[u]] += A.x[u] * w; sy[a[u]] += A.y[u] * w; sw[a[u]] += w; }
+    const best = new Int32Array(k).fill(-1), bestD = new Float64Array(k).fill(Infinity);
+    for (let u = 0; u < n; u++) {
+      const d = a[u];
+      const dx = A.x[u] - sx[d] / sw[d], dy = A.y[u] - sy[d] / sw[d];
       const dd = dx * dx + dy * dy;
-      if (dd < bestD[di]) { bestD[di] = dd; best[di] = u; }
+      if (dd < bestD[d]) { bestD[d] = dd; best[d] = u; }
     }
-    return best.map((u, i) => ({ x: d.cx[u], y: d.cy[u], text: i + 1 }));
+    const out = [];
+    for (let d = 0; d < k; d++) if (best[d] >= 0) out.push({ x: A.x[best[d]] * q, y: A.y[best[d]] * q, text: d + 1 });
+    return out;
   }
   function renderPlan() {
-    if (!S.map || !S.assign) return;
+    if (!S.map) return;
+    const D = S.D, A = D.A, n = D.n, colors = D.colors;
+    const pack = window.RedistrictMap.packColor;
+    const leanPacked = LEAN.map((b) => pack(resolveVar(b.color)));
+    if (S.colorMode === "precinct" || !S.assign) {
+      const pc = new Uint32Array(D.np);
+      for (let p = 0; p < D.np; p++) pc[p] = leanPacked[leanIndex(D.pmargin[p])];
+      for (let u = 0; u < n; u++) colors[u] = pc[A.precinct[u]];
+      S.map.setPlan(colors, S.assign, S.assign ? districtLabels() : []);
+      return;
+    }
     const a = S.assign;
-    const cols = isDark() ? CAT_DARK : CAT_LIGHT;
-    const dist = districtStats();
-    let fill;
-    if (S.colorMode === "precinct") {
-      const cache = LEAN.map((b) => resolveVar(b.color));
-      fill = (u) => cache[LEAN.findIndex((b) => S.margin[u] >= b.min)];
-    } else if (S.colorMode === "district") {
+    if (S.colorMode === "district") {
+      const cols = (isDark() ? CAT_DARK : CAT_LIGHT).map(pack);
       const dc = computeDistrictColors();
-      fill = (u) => cols[dc[a[u]] % cols.length];
+      for (let u = 0; u < n; u++) colors[u] = cols[dc[a[u]] % cols.length];
     } else {
-      const dl = dist.map((x) => resolveVar(leanColor(100 * (2 * x.share - 1))));
-      fill = (u) => dl[a[u]];
+      const dl = S.report.districts.map((x) => leanPacked[leanIndex(100 * (2 * x.share - 1))]);
+      for (let u = 0; u < n; u++) colors[u] = dl[a[u]];
     }
-    S.map.setPlan(a, fill, S.colorMode === "precinct" ? [] : districtLabels());
+    S.map.setPlan(colors, a, districtLabels());
   }
-  function setColorMode(m, silent) {
+  function setColorMode(m) {
     S.colorMode = m;
-    for (const inp of document.querySelectorAll('#rd-color input')) inp.checked = inp.value === m;
+    for (const inp of document.querySelectorAll("#rd-color input")) inp.checked = inp.value === m;
     renderLegend();
-    if (S.assign) renderPlan();
-    else if (S.map) {
-      const cache = LEAN.map((b) => resolveVar(b.color));
-      S.map.setPlan(null, (u) => cache[LEAN.findIndex((b) => S.margin[u] >= b.min)], []);
-    }
-    if (!silent) S.map && S.map.draw();
+    renderPlan();
   }
   function renderLegend() {
     if (S.colorMode === "district" && S.assign) {
@@ -331,26 +400,32 @@
   }
 
   // ---------- hover ----------
+  function blockGeoid(u) {
+    const A = S.D.A, m = S.D.meta;
+    return m.counties[A.county[u]].fips + String(A.tract[u]).padStart(6, "0") + String(A.block[u]).padStart(4, "0");
+  }
   function onHover(u, x, y) {
     const tip = el.tip;
-    if (u < 0 || !S.data) {
+    if (u < 0 || !S.D) {
       tip.hidden = true;
-      if (S.hoverDistrict >= 0) { S.hoverDistrict = -1; S.map.highlightDistrict = -1; S.map.draw(true); highlightRow(-1); }
+      if (S.hoverDistrict >= 0) { S.hoverDistrict = -1; S.map.highlightDistrict = -1; S.map.draw(); highlightRow(-1); }
       return;
     }
-    const d = S.data;
-    const t = d.dem[u] + d.rep[u];
-    const county = d.counties[d.county[u]].name;
-    const name = d.id[u].replace(/^\d{5}-?/, "") || d.id[u];
-    let html = '<div class="rd-tip-h">' + escapeHtml(name) + ' <span class="muted">' + escapeHtml(county) + "</span></div>" +
-      '<div class="mono small">' + fmt(d.pop[u]) + " people · " + (t ? "Harris " + pct(d.dem[u] / t) + " · Trump " + pct(d.rep[u] / t) : "no votes reported") + "</div>";
+    const D = S.D, A = D.A, m = D.meta, g = D.graph;
+    const p = A.precinct[u];
+    const pd = m.precincts.dem[p], pr = m.precincts.rep[p], pt = pd + pr;
+    const county = m.counties[A.county[u]].name;
+    const pname = m.precincts.id[p].replace(/^\d{5}-?/, "") || m.precincts.id[p];
+    let html = '<div class="rd-tip-h">Block ' + blockGeoid(u) + ' <span class="muted">' + escapeHtml(county) + "</span></div>" +
+      '<div class="mono small">' + fmt(A.pop[u]) + " people" + (g.dem[u] + g.rep[u] >= 0.5 ? " · est. " + fmt(g.dem[u]) + " Harris, " + fmt(g.rep[u]) + " Trump" : "") + "</div>" +
+      '<div class="mono small muted">Precinct ' + escapeHtml(pname) + ": " + (pt ? "Harris " + pct(pd / pt) + " · Trump " + pct(pr / pt) : "no votes reported") + "</div>";
     let di = -1;
     if (S.assign && S.report) {
       di = S.assign[u];
       const ds = S.report.districts[di];
       if (ds) {
-        const m = 100 * (2 * ds.share - 1);
-        html += '<div class="rd-tip-d"><strong>District ' + (di + 1) + "</strong> · " + marginText(m) + '<div class="mono small">' + fmt(ds.pop) + " people (" + (ds.dev >= 0 ? "+" : "") + pct(ds.dev, 2) + ") · Polsby–Popper " + ds.pp.toFixed(2) + "</div></div>";
+        const mm = 100 * (2 * ds.share - 1);
+        html += '<div class="rd-tip-d"><strong>District ' + (di + 1) + "</strong> · " + marginText(mm) + '<div class="mono small">' + fmt(ds.pop) + " people (" + (ds.pop >= S.report.ideal ? "+" : "") + fmt(ds.pop - S.report.ideal) + ") · Polsby–Popper " + ds.pp.toFixed(2) + "</div></div>";
       }
     }
     tip.innerHTML = html;
@@ -364,7 +439,7 @@
     if (di !== S.hoverDistrict) {
       S.hoverDistrict = di;
       S.map.highlightDistrict = di;
-      S.map.draw(true);
+      S.map.draw();
       highlightRow(di);
     }
   }
@@ -377,25 +452,31 @@
   function tile(label, value, sub, cls) {
     return '<div class="card rd-tile ' + (cls || "") + '"><div class="rd-tile-l">' + label + '</div><div class="rd-tile-v">' + value + '</div><div class="rd-tile-s small">' + sub + "</div></div>";
   }
-  function renderResults(final) {
+  function renderResults() {
     const r = S.report;
     if (!r) return;
     el.results.hidden = false;
     const k = r.k;
     const dWins = r.seats.winD, rWins = k - dWins;
     const goal = r.goal || {};
-    const goalCls = r.phase === "done" || r.phase === "polish" || r.phase === "final" ? (goal.achieved ? "is-good" : S.opts.mode === "neutral" ? "" : "is-warn") : "";
+    const settled = r.phase === "done" || r.phase === "polish" || r.phase === "final" || r.stage === "block";
+    const goalCls = settled ? (goal.achieved ? "is-good" : S.opts.mode === "neutral" ? "" : "is-warn") : "";
     const c = r.contiguity;
-    const water = c.water.reduce((a, b) => a + b, 0);
     const tiles = [];
-    tiles.push(tile("Seats", '<span class="party-d-ink">' + dWins + " D</span> – <span class=\"party-r-ink\">" + rWins + " R</span>",
+    tiles.push(tile("Seats", '<span class="party-d-ink">' + fmt(dWins) + " D</span> – <span class=\"party-r-ink\">" + fmt(rWins) + " R</span>",
       escapeHtml(goal.text || "") + (S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
     tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
-    tiles.push(tile("Contiguity", c.ok ? "✓ all " + k : "✗ " + c.broken.length + " broken",
-      c.ok ? "Every district is one connected piece" + (water ? " (" + water + " cross water to islands)" : "") : "Districts " + c.broken.map((x) => x + 1).join(", ") + " are split", c.ok ? "is-good" : "is-bad"));
-    tiles.push(tile("Population", "±" + pct(r.maxDev, 2), "Largest gap from the ideal " + fmt(r.ideal) + " (limit ±" + pct(r.tol, 2) + ")", r.maxDev <= r.userTol + 1e-9 ? "" : "is-warn"));
+    if (c) {
+      tiles.push(tile("Contiguity", c.ok ? "✓ all " + fmt(k) : "✗ " + c.broken.length + " broken",
+        c.ok ? "Every district is one connected set of census blocks" + (c.water ? " (" + c.water + " cross water to islands)" : "") : "Districts " + c.broken.slice(0, 10).map((x) => x + 1).join(", ") + " are split", c.ok ? "is-good" : "is-bad"));
+    } else {
+      tiles.push(tile("Contiguity", "…", "Every move keeps districts connected; the final check runs at the end"));
+    }
+    const range = r.maxPop - r.minPop;
+    tiles.push(tile("Population", "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
+      "Largest and smallest districts differ by " + fmt(range) + " " + (Math.round(range) === 1 ? "person" : "people") + ". Ideal: " + fmt(r.ideal) + ".", r.maxDev <= r.userTol + 1e-9 ? "" : "is-warn"));
     tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
-    tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.data.counties.length + " counties are split between districts"));
+    if (r.splitCounties != null) tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.D.meta.counties.length + " counties are split between districts"));
     const eg = r.efficiencyGap;
     tiles.push(tile("Efficiency gap", (Math.abs(eg) < 0.0005 ? "0%" : pct(Math.abs(eg))) + (Math.abs(eg) >= 0.0005 ? (eg > 0 ? " R" : " D") : ""), "Wasted-vote advantage. Above ~7% is a red flag."));
     const mm = r.meanMedian;
@@ -414,7 +495,7 @@
     const iw = W - padL - padR, ih = H - padT - padB;
     const lo = Math.max(0, Math.min(0.2, Math.floor(ds[0].share * 10) / 10)), hi = Math.min(1, Math.max(0.8, Math.ceil(ds[k - 1].share * 10) / 10));
     const y = (v) => padT + ih - ((v - lo) / (hi - lo)) * ih;
-    const slot = iw / k, bw = Math.max(2, slot - 2);
+    const slot = iw / k, gap = slot > 4 ? 2 : 0, bw = Math.max(0.5, slot - gap);
     let s = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Harris share of the two-party vote in each district, sorted">';
     for (let v = lo; v <= hi + 1e-9; v += 0.1) {
       const yy = y(v).toFixed(1);
@@ -422,15 +503,18 @@
       s += '<text class="rd-axis" x="' + (padL - 6) + '" y="' + yy + '" text-anchor="end" dominant-baseline="middle">' + Math.round(v * 100) + "%</text>";
     }
     const y50 = y(0.5);
+    const interactive = k <= 400;
     ds.forEach((d, i) => {
       const x = padL + i * slot + (slot - bw) / 2;
       const yv = y(d.share);
       const top = Math.min(yv, y50), h = Math.max(1, Math.abs(yv - y50));
       const cls = d.share > 0.5 ? "rd-bar-d" : "rd-bar-r";
       const m = 100 * (2 * d.share - 1);
-      s += '<g class="rd-barg" data-d="' + d.id + '"><rect class="rd-hit" x="' + (padL + i * slot).toFixed(1) + '" y="' + padT + '" width="' + slot.toFixed(1) + '" height="' + ih + '"/>' +
-        '<rect class="' + cls + '" x="' + x.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="' + Math.min(3, bw / 3).toFixed(1) + '"/>' +
-        "<title>District " + (d.id + 1) + ": Harris " + pct(d.share) + " (" + marginText(m) + ")</title></g>";
+      const bar = '<rect class="' + cls + '" x="' + x.toFixed(2) + '" y="' + top.toFixed(1) + '" width="' + bw.toFixed(2) + '" height="' + h.toFixed(1) + '" rx="' + Math.min(3, bw / 3).toFixed(1) + '"/>';
+      if (interactive) {
+        s += '<g class="rd-barg" data-d="' + d.id + '"><rect class="rd-hit" x="' + (padL + i * slot).toFixed(2) + '" y="' + padT + '" width="' + slot.toFixed(2) + '" height="' + ih + '"/>' + bar +
+          "<title>District " + (d.id + 1) + ": Harris " + pct(d.share) + " (" + marginText(m) + ")</title></g>";
+      } else s += bar;
     });
     const ys = y(r.stateShare).toFixed(1);
     s += '<line class="rd-state-line" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + ys + '" y2="' + ys + '"/>';
@@ -439,8 +523,8 @@
     el.chart.innerHTML = s;
     S.chartWidth = W;
     for (const g of el.chart.querySelectorAll(".rd-barg")) {
-      g.addEventListener("mouseenter", () => { const di = +g.dataset.d; S.map.highlightDistrict = di; S.map.draw(true); highlightRow(di); });
-      g.addEventListener("mouseleave", () => { S.map.highlightDistrict = -1; S.map.draw(true); highlightRow(-1); });
+      g.addEventListener("mouseenter", () => { const di = +g.dataset.d; S.map.highlightDistrict = di; S.map.draw(); highlightRow(di); });
+      g.addEventListener("mouseleave", () => { S.map.highlightDistrict = -1; S.map.draw(); highlightRow(-1); });
     }
   }
 
@@ -448,13 +532,16 @@
     const rows = r.districts.map((d) => {
       const t = d.dem + d.rep;
       const m = 100 * (2 * d.share - 1);
+      const diff = d.pop - r.ideal;
       return '<tr data-d="' + d.id + '"><th scope="row"><span class="rd-dot" style="background:' + leanColor(m) + '"></span>' + (d.id + 1) + "</th>" +
-        "<td>" + fmt(d.pop) + "</td><td>" + (d.dev >= 0 ? "+" : "") + pct(d.dev, 2) + "</td>" +
+        "<td>" + fmt(d.pop) + "</td><td>" + (diff >= 0 ? "+" : "−") + fmt(Math.abs(diff)) + " <span class='muted'>(" + (d.dev >= 0 ? "+" : "") + pct(d.dev, 3) + ")</span></td>" +
         "<td>" + pct(t ? d.dem / t : 0) + "</td><td>" + pct(t ? d.rep / t : 0) + "</td>" +
         '<td class="' + (m > 0 ? "party-d-ink" : "party-r-ink") + '">' + marginText(m) + "</td>" +
-        "<td>" + d.pp.toFixed(2) + "</td><td>" + fmt(d.precincts) + "</td><td>" + d.counties + "</td></tr>";
+        "<td>" + d.pp.toFixed(2) + "</td><td>" + fmt(d.units) + "</td><td>" + (d.counties == null ? "…" : d.counties) + "</td></tr>";
     });
     el.tbody.innerHTML = rows.join("");
+    const unitHead = document.querySelector("#rd-table thead th:nth-child(8)");
+    if (unitHead) unitHead.textContent = r.stage === "precinct" ? "Precincts" : "Blocks";
   }
 
   // ---------- exports ----------
@@ -466,15 +553,17 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
+  // Standard block-assignment file: one row per census block.
   function exportCsv() {
     if (!S.assign) return;
-    const d = S.data;
-    const lines = ["precinct_geoid,county_fips,county,district"];
-    for (let u = 0; u < d.n; u++) {
-      const c = d.counties[d.county[u]];
-      lines.push('"' + d.id[u].replace(/"/g, '""') + '",' + c.fips + ',"' + c.name + '",' + (S.assign[u] + 1));
+    const n = S.D.n, parts = ["GEOID20,District\n"];
+    let chunk = "";
+    for (let u = 0; u < n; u++) {
+      chunk += blockGeoid(u) + "," + (S.assign[u] + 1) + "\n";
+      if (chunk.length > 1 << 20) { parts.push(chunk); chunk = ""; }
     }
-    download(S.st.toLowerCase() + "-districts-seed" + S.seedUsed + ".csv", new Blob([lines.join("\n")], { type: "text/csv" }));
+    parts.push(chunk);
+    download(S.st.toLowerCase() + "-block-assignments-seed" + S.seedUsed + ".csv", new Blob(parts, { type: "text/csv" }));
   }
   function exportPng() {
     if (!S.map) return;
@@ -483,10 +572,11 @@
 
   // ---------- wiring ----------
   el.form.addEventListener("submit", (e) => { e.preventDefault(); start(); });
-  el.form.elements.state.forEach((r) => r.addEventListener("change", () => { el.target.dataset.touched = ""; loadState(r.value); }));
+  el.form.elements.state.forEach((r) => r.addEventListener("change", () => loadState(r.value)));
   el.form.elements.mode.forEach((r) => r.addEventListener("change", syncMode));
   el.k.addEventListener("input", syncK);
-  el.kReset.addEventListener("click", () => { el.k.value = STATES[S.st].seats; el.target.dataset.touched = ""; syncK(); });
+  el.k.addEventListener("change", () => { el.k.value = kValue(); syncK(); });
+  el.kReset.addEventListener("click", () => { if (!S.D) return; el.k.value = S.D.meta.seats; el.target.dataset.touched = ""; syncK(); });
   el.target.addEventListener("input", () => { el.target.dataset.touched = "1"; syncTarget(); });
   el.margin.addEventListener("input", () => { el.margin.dataset[mode() === "competitive" ? "compTouched" : "touched"] = "1"; syncMargin(); });
   el.seedClear.addEventListener("click", () => { el.seed.value = ""; });
@@ -497,7 +587,7 @@
     el.pause.textContent = S.paused ? "Resume" : "Pause";
   });
   el.skip.addEventListener("click", () => { if (S.worker) S.worker.postMessage({ cmd: "finish" }); });
-  document.querySelectorAll('#rd-color input').forEach((r) => r.addEventListener("change", () => setColorMode(r.value)));
+  document.querySelectorAll("#rd-color input").forEach((r) => r.addEventListener("change", () => setColorMode(r.value)));
   $("rd-zoom-in").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1.6));
   $("rd-zoom-out").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1 / 1.6));
   $("rd-zoom-reset").addEventListener("click", () => S.map && S.map.resetView());
@@ -506,18 +596,17 @@
   el.tbody.addEventListener("mouseover", (e) => {
     const tr = e.target.closest("tr");
     if (!tr || !S.map) return;
-    S.map.highlightDistrict = +tr.dataset.d; S.map.draw(true); highlightRow(+tr.dataset.d);
+    S.map.highlightDistrict = +tr.dataset.d; S.map.draw(); highlightRow(+tr.dataset.d);
   });
-  el.tbody.addEventListener("mouseleave", () => { if (S.map) { S.map.highlightDistrict = -1; S.map.draw(true); highlightRow(-1); } });
+  el.tbody.addEventListener("mouseleave", () => { if (S.map) { S.map.highlightDistrict = -1; S.map.draw(); highlightRow(-1); } });
   document.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => { const d = $(b.dataset.open); if (d && d.showModal) d.showModal(); }));
   document.querySelectorAll("dialog").forEach((d) => {
     d.addEventListener("click", (e) => { if (e.target === d || e.target.closest("[data-close]")) d.close(); });
   });
-  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderLegend(); if (S.assign) renderPlan(); else setColorMode(S.colorMode, true); });
-
   window.addEventListener("resize", () => {
     if (S.report && !el.results.hidden && Math.abs((el.chart.clientWidth || 0) - (S.chartWidth || 0)) > 20) renderChart(S.report);
   });
+  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderLegend(); renderPlan(); });
 
   syncMode();
   renderLegend();

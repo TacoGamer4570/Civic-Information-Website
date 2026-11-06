@@ -1,218 +1,221 @@
 /* Canvas map for the redistricting simulator.
- * Draws precincts filled by district (or by vote), district borders, the state
- * outline, and district number labels. Supports wheel/pinch zoom, drag pan,
- * and hover lookup through an offscreen "pick" canvas.
+ *
+ * The state is stored as "id images": every pixel holds the census block under
+ * it (id = block index + 1, 0 = outside). Each frame, every screen pixel looks
+ * up its block, takes that block's color, and turns ink-colored where the
+ * district changes from the pixel next to it. A coarse overview image is always
+ * loaded; sharper tiles load on demand when zoomed in.
  */
 (function (root) {
   "use strict";
 
-  function decodeArcs(geo) {
-    // arcs are delta-encoded [x0, y0, dx, dy, ...] in units of geo.q meters
-    return geo.arcs.map(function (a) {
-      const out = new Float64Array(a.length);
-      let x = 0, y = 0;
-      for (let i = 0; i < a.length; i += 2) {
-        x += a[i]; y += a[i + 1];
-        out[i] = x; out[i + 1] = y;
-      }
-      return out;
-    });
-  }
-
   function RedistrictMap(canvas, data, opts) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
-    this.data = data;
+    this.data = data;              // decoded state (see app.js)
     this.opts = opts || {};
-    this.arcs = decodeArcs(data.geo);
-    this.n = data.n;
-    const bb = data.geo.bbox;
-    this.bbox = bb;
-    this.view = { cx: (bb[0] + bb[2]) / 2, cy: (bb[1] + bb[3]) / 2, scale: 1 };
-    this.assign = null;
-    this.fillFn = null;
+    const R = data.raster;
+    this.R = R;
+    this.bbox = R.bbox;
+    this.px0 = (R.bbox[2] - R.bbox[0]) / R.overview.w;     // meters per overview pixel
+    this.detailScale = R.detail.w / R.overview.w;
+    this.tiles = new Map();          // tile index -> Uint32Array (decoded)
+    this.tileLoading = new Set();
+    this.tileSet = new Set(R.detail.tiles);
+    this.view = { cx: (R.bbox[0] + R.bbox[2]) / 2, cy: (R.bbox[1] + R.bbox[3]) / 2, scale: 1 };
+    this.colors = null;              // Uint32Array per block (little-endian RGBA)
+    this.dist = null;                // Int32Array per block (district) or null
     this.labels = [];
     this.hover = -1;
     this.highlightDistrict = -1;
-    this.pick = document.createElement("canvas");
-    this.pickCtx = this.pick.getContext("2d", { willReadFrequently: true });
-    this.pickDirty = true;
-    this._buildPaths();
     this._bind();
     this.resize();
   }
 
-  RedistrictMap.prototype._buildPaths = function () {
-    // Precinct polygons as Path2D in data units (y flipped when drawn).
-    const arcs = this.arcs;
-    this.paths = this.data.geo.polys.map(function (poly) {
-      const p = new Path2D();
-      for (const part of poly) {
-        for (const ring of part) {
-          let first = true;
-          for (const ref of ring) {
-            const a = arcs[ref >= 0 ? ref : ~ref];
-            const m = a.length / 2;
-            for (let k = 0; k < m; k++) {
-              const idx = ref >= 0 ? k : m - 1 - k;
-              if (!first && k === 0) continue;
-              const x = a[2 * idx], y = a[2 * idx + 1];
-              if (first) { p.moveTo(x, y); first = false; } else p.lineTo(x, y);
-            }
-          }
-          p.closePath();
-        }
-      }
-      return p;
-    });
-    // Outline (state border) as one path; inner arcs are drawn per frame.
-    const L = this.data.geo.left, R = this.data.geo.right;
-    const outline = new Path2D();
-    this.arcPaths = arcs.map(function (a, i) {
-      const p = new Path2D();
-      p.moveTo(a[0], a[1]);
-      for (let k = 2; k < a.length; k += 2) p.lineTo(a[k], a[k + 1]);
-      if (R[i] === -1 || L[i] === -1) outline.addPath(p); // -2 = interior gap, not drawn
-      return p;
-    });
-    this.outline = outline;
-  };
+  // Packs a CSS color into a little-endian RGBA uint32 (for ImageData).
+  const colorCache = new Map();
+  let probe = null;
+  function packColor(css) {
+    let v = colorCache.get(css);
+    if (v !== undefined) return v;
+    if (!probe) probe = document.createElement("canvas").getContext("2d");
+    probe.fillStyle = "#000"; probe.fillStyle = css;
+    const s = probe.fillStyle; // normalized "#rrggbb" or "rgba(...)"
+    let r = 0, g = 0, b = 0, a = 255;
+    if (s[0] === "#") { r = parseInt(s.slice(1, 3), 16); g = parseInt(s.slice(3, 5), 16); b = parseInt(s.slice(5, 7), 16); }
+    else { const m = s.match(/[\d.]+/g); r = +m[0]; g = +m[1]; b = +m[2]; if (m[3] != null) a = Math.round(+m[3] * 255); }
+    v = ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
+    colorCache.set(css, v);
+    return v;
+  }
+  RedistrictMap.packColor = packColor;
 
   RedistrictMap.prototype.resize = function () {
     const r = this.canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.w = Math.max(10, r.width); this.h = Math.max(10, r.height);
-    this.dpr = dpr;
-    this.canvas.width = Math.round(this.w * dpr);
-    this.canvas.height = Math.round(this.h * dpr);
-    this.pick.width = Math.round(this.w);
-    this.pick.height = Math.round(this.h);
+    this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    this.canvas.width = Math.round(this.w * this.dpr);
+    this.canvas.height = Math.round(this.h * this.dpr);
     const bb = this.bbox;
-    this.baseScale = Math.min(this.w / (bb[2] - bb[0]), this.h / (bb[3] - bb[1])) * 0.94;
-    this.pickDirty = true;
+    this.baseScale = Math.min(this.w / (bb[2] - bb[0]), this.h / (bb[3] - bb[1])) * 0.96; // CSS px per meter
+    this.image = this.ctx.createImageData(this.canvas.width, this.canvas.height);
+    this.pix = new Uint32Array(this.image.data.buffer);
     this.draw();
   };
 
-  RedistrictMap.prototype._transform = function (ctx, dpr) {
+  RedistrictMap.prototype.toWorld = function (px, py) {
     const s = this.baseScale * this.view.scale;
-    ctx.setTransform(s * dpr, 0, 0, -s * dpr, (this.w / 2 - this.view.cx * s) * dpr, (this.h / 2 + this.view.cy * s) * dpr);
-    return s;
-  };
-  RedistrictMap.prototype.toData = function (px, py) {
-    const s = this.baseScale * this.view.scale;
-    return { x: (px - this.w / 2) / s + this.view.cx, y: -(py - this.h / 2) / s + this.view.cy };
+    return { x: this.view.cx + (px - this.w / 2) / s, y: this.view.cy - (py - this.h / 2) / s };
   };
   RedistrictMap.prototype.toScreen = function (x, y) {
     const s = this.baseScale * this.view.scale;
     return { x: (x - this.view.cx) * s + this.w / 2, y: -(y - this.view.cy) * s + this.h / 2 };
   };
 
-  RedistrictMap.prototype.setPlan = function (assign, fillFn, labels) {
-    this.assign = assign;
-    this.fillFn = fillFn;
+  RedistrictMap.prototype.setPlan = function (colors, dist, labels) {
+    this.colors = colors;
+    this.dist = dist;
     this.labels = labels || [];
     this.draw();
   };
 
-  // full=true re-renders the precinct layer; otherwise only overlays change.
-  RedistrictMap.prototype.draw = function (overlayOnly) {
-    if (!overlayOnly) this.baseDirty = true;
+  RedistrictMap.prototype.draw = function () {
     if (this._raf) return;
     const self = this;
     this._raf = requestAnimationFrame(function () { self._raf = 0; self._draw(); });
   };
 
-  RedistrictMap.prototype._draw = function () {
-    const dpr = this.dpr;
-    const css = getComputedStyle(this.canvas);
-    if (!this.base) { this.base = document.createElement("canvas"); this.baseCtx = this.base.getContext("2d"); }
-    if (this.base.width !== this.canvas.width || this.base.height !== this.canvas.height) {
-      this.base.width = this.canvas.width; this.base.height = this.canvas.height; this.baseDirty = true;
+  // Use the detail tiles once a screen pixel covers less than an overview pixel.
+  RedistrictMap.prototype._useDetail = function () {
+    const metersPerDevicePx = 1 / (this.baseScale * this.view.scale * this.dpr);
+    return metersPerDevicePx < this.px0 * 0.8;
+  };
+
+  RedistrictMap.prototype._ensureTiles = function () {
+    if (!this._useDetail()) return;
+    const D = this.R.detail, ts = D.tile;
+    const pd = this.px0 / this.detailScale;
+    const a = this.toWorld(0, 0), b = this.toWorld(this.w, this.h);
+    const c0 = Math.max(0, Math.floor((a.x - this.bbox[0]) / pd / ts)), c1 = Math.min(D.cols - 1, Math.floor((b.x - this.bbox[0]) / pd / ts));
+    const r0 = Math.max(0, Math.floor((this.bbox[3] - a.y) / pd / ts)), r1 = Math.min(D.rows - 1, Math.floor((this.bbox[3] - b.y) / pd / ts));
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      const ti = r * D.cols + c;
+      if (this.tileSet.has(ti) && !this.tiles.has(ti) && !this.tileLoading.has(ti)) {
+        this.tileLoading.add(ti);
+        if (this.opts.loadTile) this.opts.loadTile(r, c);
+      }
     }
-    if (this.baseDirty) { this._drawBase(this.baseCtx, css); this.baseDirty = false; this.pickDirty = true; }
+  };
+  RedistrictMap.prototype.addTile = function (r, c, ids) {
+    const ti = r * this.R.detail.cols + c;
+    this.tiles.set(ti, ids);
+    this.tileLoading.delete(ti);
+    this.draw();
+  };
+
+  // block id (index + 1) at a world point, or 0
+  RedistrictMap.prototype._idAt = function (wx, wy, detail) {
+    const R = this.R;
+    const ox = (wx - this.bbox[0]) / this.px0, oy = (this.bbox[3] - wy) / this.px0;
+    if (detail) {
+      const ds = this.detailScale, ts = R.detail.tile;
+      const dx = Math.floor(ox * ds), dy = Math.floor(oy * ds);
+      if (dx >= 0 && dy >= 0 && dx < R.detail.w && dy < R.detail.h) {
+        const t = this.tiles.get(((dy / ts) | 0) * R.detail.cols + ((dx / ts) | 0));
+        if (t) return t[(dy % ts) * ts + (dx % ts)];
+      }
+    }
+    const x = Math.floor(ox), y = Math.floor(oy);
+    if (x < 0 || y < 0 || x >= R.overview.w || y >= R.overview.h) return 0;
+    return this.data.overview[y * R.overview.w + x];
+  };
+
+  RedistrictMap.prototype._draw = function () {
+    const css = getComputedStyle(this.canvas);
+    const bg = packColor(css.getPropertyValue("--map-bg").trim() || "#fff");
+    const ink = packColor(css.getPropertyValue("--map-ink").trim() || "#141414");
+    const empty = packColor(css.getPropertyValue("--map-empty").trim() || "#ddd");
+    const W = this.canvas.width, H = this.canvas.height, dpr = this.dpr;
+    const R = this.R, pix = this.pix;
+    const detail = this._useDetail();
+    this._ensureTiles();
+
+    // block id for every device pixel
+    if (!this.ids || this.ids.length !== W * H) this.ids = new Uint32Array(W * H);
+    const ids = this.ids;
+    const s = this.baseScale * this.view.scale * dpr; // device px per meter
+    const x0 = this.view.cx - W / 2 / s, y0 = this.view.cy + H / 2 / s;
+    const ow = R.overview.w, oh = R.overview.h, over = this.data.overview;
+    const colX = new Int32Array(W), colTile = new Int32Array(W), colOff = new Int32Array(W);
+    const ds = this.detailScale, ts = R.detail.tile, dcols = R.detail.cols;
+    for (let x = 0; x < W; x++) {
+      const ox = (x0 + (x + 0.5) / s - this.bbox[0]) / this.px0;
+      colX[x] = ox >= 0 && ox < ow ? Math.floor(ox) : -1;
+      const dx = Math.floor(ox * ds);
+      colTile[x] = dx >= 0 && dx < R.detail.w ? (dx / ts) | 0 : -1;
+      colOff[x] = dx % ts;
+    }
+    for (let y = 0; y < H; y++) {
+      const oy = (this.bbox[3] - (y0 - (y + 0.5) / s)) / this.px0;
+      const row = y * W;
+      const iy = Math.floor(oy);
+      if (iy < 0 || iy >= oh) { ids.fill(0, row, row + W); continue; }
+      const orow = iy * ow;
+      let trow = -1, toff = 0;
+      if (detail) {
+        const dy = Math.floor(oy * ds);
+        if (dy >= 0 && dy < R.detail.h) { trow = ((dy / ts) | 0) * dcols; toff = (dy % ts) * ts; }
+      }
+      let lastTi = -2, tile = null;
+      for (let x = 0; x < W; x++) {
+        const cx = colX[x];
+        if (cx < 0) { ids[row + x] = 0; continue; }
+        if (trow >= 0 && colTile[x] >= 0) {
+          const ti = trow + colTile[x];
+          if (ti !== lastTi) { tile = this.tiles.get(ti) || null; lastTi = ti; }
+          if (tile) { ids[row + x] = tile[toff + colOff[x]]; continue; }
+        }
+        ids[row + x] = over[orow + cx];
+      }
+    }
+
+    // colors + borders
+    const colors = this.colors, dist = this.dist, hl = this.highlightDistrict;
+    const thick = dpr >= 1.25 ? 2 : 1;
+    for (let y = 0; y < H; y++) {
+      const row = y * W;
+      for (let x = 0; x < W; x++) {
+        const id = ids[row + x];
+        if (id === 0) {
+          // state outline: an outside pixel right next to an inside one
+          const l = x > 0 ? ids[row + x - 1] : 0, up = y > 0 ? ids[row - W + x] : 0;
+          pix[row + x] = l || up ? ink : bg;
+          continue;
+        }
+        const u = id - 1;
+        let c = colors ? colors[u] : empty;
+        if (dist) {
+          const d = dist[u];
+          let edge = false;
+          for (let t = 1; t <= thick && !edge; t++) {
+            if (x >= t) { const j = ids[row + x - t]; if (j === 0 || dist[j - 1] !== d) edge = true; }
+            if (y >= t) { const j = ids[row - t * W + x]; if (j === 0 || dist[j - 1] !== d) edge = true; }
+          }
+          if (edge) c = ink;
+          else if (hl >= 0 && d !== hl) c = (((c & 0xfefefe) >>> 1) + ((bg & 0xfefefe) >>> 1)) | 0xff000000;
+        } else if ((x > 0 && ids[row + x - 1] === 0) || (y > 0 && ids[row - W + x] === 0)) c = ink;
+        pix[row + x] = c >>> 0;
+      }
+    }
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(this.base, 0, 0);
-    this._drawOverlay(ctx, css);
-  };
-
-  RedistrictMap.prototype._drawBase = function (ctx, css) {
-    const dpr = this.dpr;
-    const bg = css.getPropertyValue("--map-bg").trim() || "#fff";
-    const ink = css.getPropertyValue("--map-ink").trim() || "#141414";
-    const empty = css.getPropertyValue("--map-empty").trim() || "#ddd";
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    const s = this._transform(ctx, dpr);
-    const px = 1 / s; // one CSS pixel in data units
-
-    // fills: batch precincts by color
-    const groups = new Map();
-    for (let u = 0; u < this.n; u++) {
-      const c = this.fillFn ? this.fillFn(u) : empty;
-      let g = groups.get(c);
-      if (!g) { g = []; groups.set(c, g); }
-      g.push(u);
-    }
-    for (const [color, list] of groups) {
-      ctx.fillStyle = color;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = px * 0.6; // hides hairline seams between neighbors
-      for (const u of list) { ctx.fill(this.paths[u]); ctx.stroke(this.paths[u]); }
-    }
-
-    const a = this.assign;
-    const L = this.data.geo.left, R = this.data.geo.right;
-    // faint precinct lines when zoomed in
-    if (this.view.scale >= 6) {
-      ctx.strokeStyle = css.getPropertyValue("--map-precinct").trim() || "rgba(0,0,0,.15)";
-      ctx.lineWidth = px * 0.6;
-      for (let i = 0; i < this.arcPaths.length; i++) if (L[i] >= 0 && R[i] >= 0) ctx.stroke(this.arcPaths[i]);
-    }
-    // district borders
-    if (a) {
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = px * 1.6;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      for (let i = 0; i < this.arcPaths.length; i++) {
-        const l = L[i], r = R[i];
-        if (l >= 0 && r >= 0 && a[l] !== a[r]) ctx.stroke(this.arcPaths[i]);
-      }
-    }
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = px * 1.6;
-    ctx.stroke(this.outline);
-  };
-
-  RedistrictMap.prototype._drawOverlay = function (ctx, css) {
-    const dpr = this.dpr;
-    const bg = css.getPropertyValue("--map-bg").trim() || "#fff";
-    const ink = css.getPropertyValue("--map-ink").trim() || "#141414";
-    const s = this._transform(ctx, dpr);
-    const px = 1 / s;
-    const a = this.assign;
-    const L = this.data.geo.left, R = this.data.geo.right;
-    // highlighted district / hovered precinct
-    if (a && this.highlightDistrict >= 0) {
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = px * 3.5;
-      for (let i = 0; i < this.arcPaths.length; i++) {
-        const l = L[i], r = R[i];
-        const inL = l >= 0 && a[l] === this.highlightDistrict, inR = r >= 0 && a[r] === this.highlightDistrict;
-        if (inL !== inR) ctx.stroke(this.arcPaths[i]);
-      }
-    }
-    if (this.hover >= 0) {
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = px * 2;
-      ctx.stroke(this.paths[this.hover]);
-    }
+    ctx.putImageData(this.image, 0, 0);
 
     // labels
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (this.labels.length && this.opts.showLabels !== false) {
+    if (this.labels.length) {
+      const inkCss = css.getPropertyValue("--map-ink").trim() || "#141414";
+      const bgCss = css.getPropertyValue("--map-bg").trim() || "#fff";
       ctx.font = "700 11px " + (css.getPropertyValue("--mono").trim() || "monospace");
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -226,45 +229,27 @@
         const box = [p.x - w / 2 - 2, p.y - 10, p.x + w / 2 + 2, p.y + 10];
         if (placed.some((q) => box[0] < q[2] && box[2] > q[0] && box[1] < q[3] && box[3] > q[1])) continue;
         placed.push(box);
-        ctx.fillStyle = bg;
-        ctx.strokeStyle = ink;
-        ctx.lineWidth = 1.5;
+        ctx.fillStyle = bgCss; ctx.strokeStyle = inkCss; ctx.lineWidth = 1.5;
         ctx.beginPath();
         if (ctx.roundRect) ctx.roundRect(p.x - w / 2, p.y - 8, w, 16, 8); else ctx.rect(p.x - w / 2, p.y - 8, w, 16);
         ctx.fill(); ctx.stroke();
-        ctx.fillStyle = ink;
+        ctx.fillStyle = inkCss;
         ctx.fillText(t, p.x, p.y + 0.5);
       }
     }
   };
 
-  // Offscreen canvas where precinct u is painted in color u+1 for hit testing.
-  RedistrictMap.prototype._drawPick = function () {
-    const ctx = this.pickCtx;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, this.pick.width, this.pick.height);
-    ctx.imageSmoothingEnabled = false;
-    this._transform(ctx, 1);
-    for (let u = 0; u < this.n; u++) {
-      const id = u + 1;
-      ctx.fillStyle = "rgb(" + (id & 255) + "," + ((id >> 8) & 255) + "," + ((id >> 16) & 255) + ")";
-      ctx.fill(this.paths[u]);
-    }
-    this.pickDirty = false;
-  };
-  RedistrictMap.prototype.precinctAt = function (px, py) {
-    if (this.pickDirty) this._drawPick();
-    const x = Math.round(px), y = Math.round(py);
-    if (x < 0 || y < 0 || x >= this.pick.width || y >= this.pick.height) return -1;
-    const d = this.pickCtx.getImageData(x, y, 1, 1).data;
-    if (d[3] < 255) return -1;
-    return (d[0] | (d[1] << 8) | (d[2] << 16)) - 1;
+  RedistrictMap.prototype.blockAt = function (px, py) {
+    const w = this.toWorld(px, py);
+    return this._idAt(w.x, w.y, this._useDetail()) - 1;
   };
 
   RedistrictMap.prototype.zoomAt = function (px, py, factor) {
-    const before = this.toData(px, py);
-    this.view.scale = Math.max(1, Math.min(400, this.view.scale * factor));
-    const after = this.toData(px, py);
+    const before = this.toWorld(px, py);
+    // stop when a detail pixel is ~6 screen pixels wide
+    const maxScale = 6 / (this.baseScale * this.px0 / this.detailScale);
+    this.view.scale = Math.max(1, Math.min(maxScale, this.view.scale * factor));
+    const after = this.toWorld(px, py);
     this.view.cx += before.x - after.x;
     this.view.cy += before.y - after.y;
     if (this.view.scale === 1) { const bb = this.bbox; this.view.cx = (bb[0] + bb[2]) / 2; this.view.cy = (bb[1] + bb[3]) / 2; }
@@ -278,9 +263,8 @@
 
   RedistrictMap.prototype._bind = function () {
     const self = this, c = this.canvas;
-    let drag = null;
+    let drag = null, pinch = null;
     const pointers = new Map();
-    let pinch = null;
     c.addEventListener("wheel", function (e) {
       e.preventDefault();
       const r = c.getBoundingClientRect();
@@ -317,32 +301,29 @@
           return;
         }
       }
-      if (e.pointerType === "mouse") self._hoverAt(e.clientX - r.left, e.clientY - r.top, e);
+      if (e.pointerType === "mouse") self._hoverAt(e.clientX - r.left, e.clientY - r.top);
     });
     function end(e) {
       pointers.delete(e.pointerId);
       if (pointers.size < 2) pinch = null;
       if (drag && !drag.moved && e.type === "pointerup") {
         const r = c.getBoundingClientRect();
-        self._hoverAt(e.clientX - r.left, e.clientY - r.top, e, true);
+        self._hoverAt(e.clientX - r.left, e.clientY - r.top);
       }
       if (pointers.size === 0) drag = null;
     }
     c.addEventListener("pointerup", end);
     c.addEventListener("pointercancel", end);
     c.addEventListener("pointerleave", function () {
-      if (self.hover >= 0) { self.hover = -1; self.draw(true); }
+      self.hover = -1;
       if (self.opts.onHover) self.opts.onHover(-1);
     });
     if (window.ResizeObserver) new ResizeObserver(function () { self.resize(); }).observe(c);
   };
-  RedistrictMap.prototype._hoverAt = function (x, y, e, isClick) {
-    const u = this.precinctAt(x, y);
-    if (u !== this.hover) {
-      this.hover = u;
-      this.draw(true);
-    }
-    if (this.opts.onHover) this.opts.onHover(u, x, y, isClick);
+  RedistrictMap.prototype._hoverAt = function (x, y) {
+    const u = this.blockAt(x, y);
+    this.hover = u;
+    if (this.opts.onHover) this.opts.onHover(u, x, y);
   };
 
   root.RedistrictMap = RedistrictMap;
