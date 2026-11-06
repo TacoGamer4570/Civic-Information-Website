@@ -252,7 +252,26 @@ function landContiguous(st, blockAssign, k) {
   for (let i = 0; i < br.length; i += 2) join(br[i], br[i + 1]);
   const roots = new Array(k).fill(null).map(() => new Set());
   for (let u = 0; u < n; u++) if (!A.water[u]) roots[blockAssign[u]].add(find(u));
-  return roots.every((r) => r.size === 1);
+  if (!roots.every((r) => r.size === 1)) return false;
+  // stricter: on each land mass, each district is a single piece over land
+  // (no part of a district stranded inside another, reachable only across water)
+  const mp = new Int32Array(n), lp = new Int32Array(n);
+  for (let i = 0; i < n; i++) { mp[i] = i; lp[i] = i; }
+  const f2 = (p, x) => { while (p[x] !== x) { p[x] = p[p[x]]; x = p[x]; } return x; };
+  e = 0;
+  for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) {
+    const v = u + A.dv[e];
+    if (A.water[u] || A.water[v] || A.elen[e] === 0) continue;
+    mp[f2(mp, u)] = f2(mp, v);
+    if (blockAssign[u] === blockAssign[v]) lp[f2(lp, u)] = f2(lp, v);
+  }
+  const piece = new Map();
+  for (let u = 0; u < n; u++) {
+    if (A.water[u]) continue;
+    const key = blockAssign[u] + "|" + f2(mp, u), p = f2(lp, u);
+    if (!piece.has(key)) piece.set(key, p); else if (piece.get(key) !== p) return false;
+  }
+  return true;
 }
 
 test("PA: a quick real run gives districts connected over land, within ±0.1%", () => {

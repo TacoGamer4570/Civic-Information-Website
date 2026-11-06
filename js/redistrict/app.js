@@ -535,7 +535,9 @@
     tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
     if (c) {
       tiles.push(tile("Contiguity", c.ok ? "✓ all " + fmt(k) : "✗ " + c.broken.length + " broken",
-        c.ok ? "Every district is connected over land. Water is only crossed to reach islands or land cut off by water" + (c.water ? " (" + c.water + " district" + (c.water === 1 ? " does" : "s do") + ")" : "") + "." : "Districts " + c.broken.slice(0, 10).map((x) => x + 1).join(", ") + " are split", c.ok ? "is-good" : "is-bad"));
+        c.ok
+          ? "Every district is one piece over land on each land mass: no part of a district is stranded inside another. Water is only crossed to reach islands or land cut off by water" + (c.water ? " (" + c.water + " district" + (c.water === 1 ? " does" : "s do") + ")" : "") + "."
+          : "Districts " + c.broken.slice(0, 10).map((x) => x + 1).join(", ") + " are split" + (c.stray ? " (" + c.stray + " piece" + (c.stray === 1 ? "" : "s") + " stranded inside another district)" : ""), c.ok ? "is-good" : "is-bad"));
     } else {
       tiles.push(tile("Contiguity", "…", "Every move keeps districts connected; the final check runs at the end"));
     }

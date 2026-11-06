@@ -63,7 +63,7 @@ The chain runs in a Web Worker:
 
 **Superthinking** runs that whole sequence in cycles, forever, until you press *Stop & keep best*. Each cycle is scored against the best map so far (first your goal, then compactness, or population balance if compactness is ignored; only maps within your tolerance and fully contiguous count). Most cycles start from the best map and push further, with gerrymander goals always aiming one seat higher and later cycles searching harder. Every fourth cycle restarts from a fresh random map. The map shows the best result so far, or the live search if you tick *Watch the live search*.
 
-Moves are ReCom (merge two districts, cut a random spanning tree into equal halves) and single-unit flips that are only allowed when the district stays connected. Every district is checked for contiguity at the block level at the end. The **Download assignments** button saves a standard block-assignment CSV (`GEOID20,District`).
+Moves are ReCom (merge two districts, cut a random spanning tree into equal halves) and single-unit flips that are only allowed when the district stays connected. Every district is checked at the block level at the end: on each land mass it must be one piece connected over land (no part of a district stranded inside another and reachable only across water); every move enforces the same rule. The **Download assignments** button saves a standard block-assignment CSV (`GEOID20,District`).
 
 ### Rebuilding the data
 

@@ -69,7 +69,9 @@
         for (let j = start[u]; j < start[u + 1]; j++) b += nlen[j];
         border[u] = b;
       }
-      return { n, E, eu, ev, elen, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county, nc };
+      // mass: which land mass (connected over land borders) each unit is on, if known
+      const mass = d.mass ? Int32Array.from(d.mass) : null;
+      return { n, E, eu, ev, elen, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county, nc, mass };
     }
 
     // Merge units into groups (e.g. blocks -> precincts). label[u] = group id (any ints >= 0).
@@ -85,7 +87,7 @@
       }
       const m = remap.size;
       const pop = new Float64Array(m), dem = new Float64Array(m), rep = new Float64Array(m), area = new Float64Array(m), ext = new Float64Array(m);
-      const county = new Int32Array(m), bestPop = new Float64Array(m).fill(-1);
+      const county = new Int32Array(m), bestPop = new Float64Array(m).fill(-1), gmass = g.mass ? new Int32Array(m) : null;
       for (let u = 0; u < n; u++) {
         const a = groupOf[u];
         pop[a] += g.pop[u]; dem[a] += g.dem[u]; rep[a] += g.rep[u]; area[a] += g.area[u];
@@ -93,6 +95,7 @@
         for (let j = g.start[u]; j < g.start[u + 1]; j++) inner -= g.nlen[j];
         ext[a] += inner;
         if (g.pop[u] > bestPop[a]) { bestPop[a] = g.pop[u]; county[a] = g.county[u]; }
+        if (gmass) gmass[a] = g.mass[u];
       }
       const shared = new Map();
       for (let i = 0; i < g.E; i++) {
@@ -106,7 +109,7 @@
       const eu = new Int32Array(shared.size), ev = new Int32Array(shared.size), elen = new Float64Array(shared.size), econn = new Uint8Array(shared.size);
       let i = 0;
       for (const [key, o] of shared) { eu[i] = Math.floor(key / m); ev[i] = key % m; elen[i] = o.L; econn[i] = o.c; i++; }
-      return { graph: buildGraph({ n: m, pop, dem, rep, area, ext, county, eu, ev, elen, econn }), groupOf };
+      return { graph: buildGraph({ n: m, pop, dem, rep, area, ext, county, eu, ev, elen, econn, mass: gmass }), groupOf };
     }
 
     // a land border beats a water link, which beats a shape-only border
@@ -116,7 +119,7 @@
 
     // ---------- engine ----------
     function createEngine(g, opts) {
-      const { n, E, eu, ev, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county } = g;
+      const { n, E, eu, ev, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county, mass } = g;
       const k = opts.k | 0;
       if (k < 1 || k > n) throw new Error("Can't make " + k + " districts from " + n + " units.");
       const rand = opts.rand || makeRng(opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed);
@@ -134,6 +137,12 @@
       }, opts.tune || {});
       // county bookkeeping costs nc*k memory; skip it when that's huge
       const countyOn = g.nc * k <= 3e7;
+      // Strict land rule: on each land mass, a district must be one piece connected
+      // over land. Water links may only join pieces on different land masses.
+      let nMass = 0;
+      if (mass) for (let u = 0; u < n; u++) if (mass[u] + 1 > nMass) nMass = mass[u] + 1;
+      const massOn = nMass > 1 && nMass * k <= 3e7;
+      const dm = massOn ? new Int32Array(nMass * k) : null; // units of land mass m in district d
       const nc = countyOn ? g.nc : 1;
 
       let totalPop = 0, totalDem = 0, totalRep = 0;
@@ -235,6 +244,7 @@
 
       function recomputeAll() {
         dPop.fill(0); dDem.fill(0); dRep.fill(0); dArea.fill(0); dPerim.fill(0); dCnt.fill(0); cd.fill(0); cPresent.fill(0);
+        if (massOn) { dm.fill(0); for (let u = 0; u < n; u++) dm[mass[u] * k + assign[u]]++; }
         for (let u = 0; u < n; u++) {
           const d = assign[u];
           dPop[d] += pop[u]; dDem[d] += dem[u]; dRep[d] += rep[u]; dArea[d] += area[u]; dCnt[d]++;
@@ -428,51 +438,62 @@
 
       // ----- contiguity repair (after projecting a coarse map onto finer units) -----
       // Each district keeps its biggest piece; stray pieces join the neighbor they share the most border with.
+      // Each district keeps its biggest piece; stray pieces join the neighbor they share
+      // the most border with. Two passes, repeated until clean: first over land only
+      // (one piece per district on each land mass), then over land + water links
+      // (the district as a whole is connected).
       function repairContiguity() {
         const comp = new Int32Array(n);
         let moved = 0;
-        for (let iter = 0; iter < 50; iter++) {
+        function pass(landOnly) {
           comp.fill(-1);
-          const compPop = [], compDist = [], compSize = [];
-          for (let s = 0; s < n; s++) {
-            if (comp[s] >= 0) continue;
-            const c = compPop.length, d = assign[s];
+          const compPop = [], compDist = [], compKey = [];
+          for (let s0 = 0; s0 < n; s0++) {
+            if (comp[s0] >= 0) continue;
+            const c = compPop.length, d = assign[s0];
             let qh = 0, qt = 0, p = 0;
-            queue[qt++] = s; comp[s] = c;
+            queue[qt++] = s0; comp[s0] = c;
             while (qh < qt) {
               const x = queue[qh++]; p += pop[x] + 1e-6;
               for (let j = start[x]; j < start[x + 1]; j++) {
                 const y = nbr[j];
-                if (nconn[j] && comp[y] < 0 && assign[y] === d) { comp[y] = c; queue[qt++] = y; }
+                if (nconn[j] && (!landOnly || nconn[j] === 1) && comp[y] < 0 && assign[y] === d) { comp[y] = c; queue[qt++] = y; }
               }
             }
-            compPop.push(p); compDist.push(d); compSize.push(qt);
+            compPop.push(p); compDist.push(d); compKey.push(landOnly ? d * nMass + mass[s0] : d);
           }
-          const main = new Int32Array(k).fill(-1);
+          const main = new Map();
           for (let c = 0; c < compPop.length; c++) {
-            const d = compDist[c];
-            if (main[d] < 0 || compPop[c] > compPop[main[d]]) main[d] = c;
+            const m0 = main.get(compKey[c]);
+            if (m0 === undefined || compPop[c] > compPop[m0]) main.set(compKey[c], c);
           }
-          if (compPop.length === k) break;
-          // for each stray piece, the neighboring district with the longest shared border
+          if (main.size === compPop.length) return 0;
           const bestD = new Int32Array(compPop.length).fill(-1), bestL = new Float64Array(compPop.length).fill(-1);
           const acc = new Map();
           for (let u = 0; u < n; u++) {
             const c = comp[u];
-            if (main[compDist[c]] === c) continue;
+            if (main.get(compKey[c]) === c) continue;
             for (let j = start[u]; j < start[u + 1]; j++) {
               const y = nbr[j], dy = assign[y];
-              if (!nconn[j] || dy === compDist[c]) continue;
+              if (!nconn[j] || (landOnly && nconn[j] !== 1) || dy === compDist[c]) continue;
               const key = c * k + dy;
               const L = (acc.get(key) || 0) + nlen[j] + 1e-3;
               acc.set(key, L);
               if (L > bestL[c]) { bestL[c] = L; bestD[c] = dy; }
             }
           }
+          let mv = 0;
           for (let u = 0; u < n; u++) {
             const c = comp[u];
-            if (main[compDist[c]] !== c && bestD[c] >= 0) { assign[u] = bestD[c]; moved++; }
+            if (main.get(compKey[c]) !== c && bestD[c] >= 0) { assign[u] = bestD[c]; mv++; }
           }
+          return mv;
+        }
+        for (let iter = 0; iter < 50; iter++) {
+          const a = mass ? pass(true) : 0;
+          const b = pass(false);
+          moved += a + b;
+          if (a === 0 && b === 0) break;
         }
         return moved;
       }
@@ -518,6 +539,7 @@
           side[x] = oi >= p0 && oi < p1 ? 1 : 0;
           if (side[x] === 1 && assign[nodes[x]] === A) overlapA++;
         }
+        if (massOn && !halvesKeepLandPieces(m)) { cleanup(m); return false; }
         const lab1 = overlapA * 2 >= size[c] ? A : B, lab0 = lab1 === A ? B : A;
         let p1v = 0, p0v = 0, d1 = 0, d0 = 0, r1 = 0, r0 = 0, a1 = 0, a0 = 0, per1 = 0, per0 = 0, c1 = 0, c0 = 0;
         for (let i = 0; i < m; i++) {
@@ -551,14 +573,41 @@
       }
       // county counts only; `splits` is restored separately
       function moveCountyRaw(x, from, to) {
+        if (massOn) { dm[mass[x] * k + from]--; dm[mass[x] * k + to]++; }
         if (!countyOn) return;
         const c = county[x];
         if (--cd[c * k + from] === 0) cPresent[c]--;
         if (cd[c * k + to]++ === 0) cPresent[c]++;
       }
       function cleanup(m) { for (let i = 0; i < m; i++) loc[nodes[i]] = -1; }
+      // After a ReCom split (side[] over nodes[0..m)): on each land mass, each half
+      // must be a single piece over land. The tree may have used a water link.
+      function halvesKeepLandPieces(m) {
+        stampId++;
+        const seen = new Set();
+        for (let i = 0; i < m; i++) {
+          const x0 = nodes[i];
+          if (stamp[x0] === stampId) continue;
+          const key = side[i] * nMass + mass[x0];
+          if (seen.has(key)) return false;
+          seen.add(key);
+          let qh = 0, qt = 0;
+          queue[qt++] = i; stamp[x0] = stampId;
+          while (qh < qt) {
+            const li = queue[qh++], x = nodes[li];
+            for (let j = start[x]; j < start[x + 1]; j++) {
+              if (nconn[j] !== 1) continue;
+              const l2 = loc[nbr[j]];
+              if (l2 < 0 || side[l2] !== side[li] || stamp[nbr[j]] === stampId) continue;
+              stamp[nbr[j]] = stampId; queue[qt++] = l2;
+            }
+          }
+        }
+        return true;
+      }
       function setStats(d, p, de, r, a, per, c) { dPop[d] = p; dDem[d] = de; dRep[d] = r; dArea[d] = a; dPerim[d] = per; dCnt[d] = c; }
       function moveCounty(x, from, to) {
+        if (massOn) { dm[mass[x] * k + from]--; dm[mass[x] * k + to]++; }
         if (!countyOn) return;
         const c = county[x];
         if (--cd[c * k + from] === 0) { cPresent[c]--; if (cPresent[c] >= 1) splits--; }
@@ -605,6 +654,12 @@
           if (Math.abs(nA - ideal) > lim || Math.abs(nB - ideal) > lim) return false;
         }
         if (!stillConnectedWithout(u, A)) return false;
+        if (massOn) {
+          // on u's land mass, u must join B's land there (if B has any), and A's land
+          // there must stay one piece without u
+          if (dm[mass[u] * k + B] > 0 && !touchesByLand(u, B)) return false;
+          if (!stillConnectedWithout(u, A, true)) return false;
+        }
         let inA = 0, inB = 0;
         for (let j = start[u]; j < start[u + 1]; j++) {
           const a = assign[nbr[j]];
@@ -619,14 +674,21 @@
         moveCountyRaw(u, B, A);
         return false;
       }
-      // Does district A stay connected if u leaves it?
-      function stillConnectedWithout(u, A) {
+      function touchesByLand(u, B) {
+        for (let j = start[u]; j < start[u + 1]; j++) if (nconn[j] === 1 && assign[nbr[j]] === B) return true;
+        return false;
+      }
+      // Does district A stay connected if u leaves it? landOnly: over land borders only
+      // (used for A's piece on u's land mass).
+      function stillConnectedWithout(u, A, landOnly) {
+        const need = landOnly ? 1 : 0;
         let targets = 0, first = -1;
         stampId++;
         for (let j = start[u]; j < start[u + 1]; j++) {
           const y = nbr[j];
-          if (nconn[j] && assign[y] === A && stamp[y] !== stampId) { stamp[y] = stampId; targets++; if (first < 0) first = y; }
+          if (nconn[j] && (!need || nconn[j] === 1) && assign[y] === A && stamp[y] !== stampId) { stamp[y] = stampId; targets++; if (first < 0) first = y; }
         }
+        if (landOnly && targets === 0) return true;
         if (targets <= 1) return targets === 1;
         const tgt = stampId; stampId++;
         let qh = 0, qt = 0, found = 1;
@@ -635,7 +697,7 @@
           const x = queue[qh++];
           for (let j = start[x]; j < start[x + 1]; j++) {
             const y = nbr[j];
-            if (!nconn[j] || assign[y] !== A || stamp[y] === stampId) continue;
+            if (!nconn[j] || (need && nconn[j] !== 1) || assign[y] !== A || stamp[y] === stampId) continue;
             if (stamp[y] === tgt) { found++; if (found === targets) return true; }
             stamp[y] = stampId; queue[qt++] = y;
           }
@@ -732,6 +794,7 @@
           if (moved) notes.push("Reconnected " + moved.toLocaleString("en-US") + " stray " + unitName + "s when switching to census blocks.");
         } else {
           initialPlan();
+          if (mass) repairContiguity();
         }
         recomputeAll();
         if (opts.lockFromStart && mode !== "neutral") lock = currentLock();
@@ -874,10 +937,29 @@
             }
           }
         }
+        // land pieces: on each land mass a district must be one piece over land
+        let stray = 0;
+        const strayIn = new Uint8Array(k);
+        if (mass) {
+          const seenL = new Uint8Array(n), pieces = new Set();
+          for (let s0 = 0; s0 < n; s0++) {
+            if (seenL[s0]) continue;
+            const d = assign[s0], key = d * nMass + mass[s0];
+            if (pieces.has(key)) { stray++; strayIn[d] = 1; } else pieces.add(key);
+            let qh = 0, qt = 0; queue[qt++] = s0; seenL[s0] = 1;
+            while (qh < qt) {
+              const x = queue[qh++];
+              for (let j = start[x]; j < start[x + 1]; j++) {
+                const y = nbr[j];
+                if (nconn[j] === 1 && !seenL[y] && assign[y] === d) { seenL[y] = 1; queue[qt++] = y; }
+              }
+            }
+          }
+        }
         const broken = [];
         let water = 0;
-        for (let d = 0; d < k; d++) { if (comps[d] !== 1) broken.push(d); water += usesBridge[d]; }
-        return { ok: broken.length === 0, broken, water };
+        for (let d = 0; d < k; d++) { if (comps[d] !== 1 || strayIn[d]) broken.push(d); water += usesBridge[d]; }
+        return { ok: broken.length === 0, broken, water, stray };
       }
 
       // full=false skips the slower whole-map checks (used for live progress)
@@ -1128,8 +1210,13 @@
       for (let i = 0; i < lu.length; i++) if (lc[i] === 1 && group[lu[i]] === group[lv[i]]) { const ra = find(lu[i]), rb = find(lv[i]); if (ra !== rb) uf[ra] = rb; }
       const piece = new Int32Array(nl);
       for (let i = 0; i < nl; i++) piece[i] = find(i);
+      // land masses: connected over land borders
+      for (let i = 0; i < nl; i++) uf[i] = i;
+      for (let i = 0; i < lu.length; i++) if (lc[i] === 1) { const ra = find(lu[i]), rb = find(lv[i]); if (ra !== rb) uf[ra] = rb; }
+      const massIds = new Map(), landMass = new Int32Array(nl);
+      for (let i = 0; i < nl; i++) { const r = find(i); let id = massIds.get(r); if (id === undefined) { id = massIds.size; massIds.set(r, id); } landMass[i] = id; }
       return {
-        n: nl, pop, dem, rep, area, ext, county, group: piece, precinct: group,
+        n: nl, pop, dem, rep, area, ext, county, group: piece, precinct: group, mass: landMass,
         eu: Int32Array.from(lu), ev: Int32Array.from(lv), elen: Float64Array.from(ll), econn: Uint8Array.from(lc),
         landIds, landOf, attach, blocks: n,
       };
