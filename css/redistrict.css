@@ -226,3 +226,5 @@
 #rd-swing-field .rd-range { flex-wrap: wrap; }
 #rd-swing-field .rd-range input[type="range"] { flex-basis: 100%; }
 #rd-swing-out { min-width: 0; text-align: left; white-space: normal; }
+.rd-swing-num { display: flex; align-items: center; gap: 6px; width: 100%; }
+.rd-swing-num input { width: 84px; font: inherit; font-family: var(--mono); font-size: .9rem; padding: 4px 8px; border: 2px solid var(--line); border-radius: var(--radius-sm); background: var(--paper); color: var(--ink); }

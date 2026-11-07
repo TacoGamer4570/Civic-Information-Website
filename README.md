@@ -61,7 +61,7 @@ The chain runs in a Web Worker:
 3. **Make it compact.** The seat result is locked while the chain improves Polsby–Popper scores. Skipped, and compactness left out of every score, when you choose *Ignore compactness*.
 4. **Refine with census blocks.** Steps 1–3 move whole precincts (aggregated from blocks) for speed; then the map switches to individual blocks to balance population tightly and smooth borders, seat result still locked. With very many districts (fewer than 8 precincts each), every step runs on blocks.
 
-The **Statewide popular vote** slider swings the electorate: every Democratic vote is multiplied by (new D share ÷ actual D share) and every Republican vote by (new R share ÷ actual R share), so the state lands exactly on the chosen margin while each area keeps its relative lean.
+The **Statewide popular vote** slider swings the electorate: every Democratic vote is multiplied by (new D share ÷ actual D share) and every Republican vote by (new R share ÷ actual R share), so the state lands exactly on the chosen margin (to 0.1 point) while each area keeps its relative lean. With a map drawn, moving it previews that same map under the new electorate (seats, colors, chart, table) without rerunning.
 
 After a map is drawn, **Apply to this map** reruns with whatever settings you've changed, starting from the districts on screen; **Start over** draws a fresh random map. (Changing the number of districts or the state needs a fresh map.)
 
