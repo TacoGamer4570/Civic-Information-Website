@@ -72,16 +72,6 @@
           <p class="rd-statline mono small" id="rd-statline">Loading census blocks…</p>
         </fieldset>
 
-        <div class="rd-field" id="rd-swing-field">
-          <label class="rd-label" for="rd-swing">Statewide popular vote</label>
-          <div class="rd-range">
-            <input type="range" id="rd-swing" min="-40" max="40" step="0.1" value="0">
-            <label class="rd-swing-num small" for="rd-swing-num">margin <input type="number" id="rd-swing-num" min="-40" max="40" step="0.1" value="0" inputmode="decimal"> <span class="muted">(+ = D, − = R)</span></label>
-            <output id="rd-swing-out" class="mono">—</output>
-          </div>
-          <p class="hint small muted" id="rd-swing-hint">Swing the whole electorate. Every Democratic vote is scaled by (new D share ÷ actual D share) and every Republican vote by (new R share ÷ actual R share), so each area keeps its lean relative to the state. Once a map is drawn, moving this shows how that same map would vote. <button type="button" class="link-btn small" id="rd-swing-reset">use the actual 2024 result</button></p>
-        </div>
-
         <div class="rd-field">
           <label class="rd-label" for="rd-k">Number of districts</label>
           <div class="rd-inline">
@@ -289,10 +279,6 @@
         <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>
       <p>Last, every district is checked with a graph search: on each land mass it must be a single piece connected over land, so no part of a district can be stranded inside another one and reached only across water. The same rule is enforced on every move along the way.</p>
-
-      <h3>Swinging the popular vote</h3>
-      <p>The <strong>Statewide popular vote</strong> slider starts at the actual 2024 result. Move it to simulate a different electorate: every Democratic vote is multiplied by (new D share ÷ actual D share) and every Republican vote by (new R share ÷ actual R share). For example, turning an R+3 state (48.5 D / 51.5 R) into D+2 (51 D / 49 R) multiplies Democratic votes by 51/48.5 and Republican votes by 49/51.5. Every area keeps its lean relative to the state, the statewide total lands exactly on your number, and every goal, map color, and result uses the swung votes. You can set it to the tenth of a point by typing in the margin box.</p>
-      <p>Once a map is drawn, moving the slider previews that same map under the new electorate: district colors, seats, the chart, and the table update right away, without redrawing anything. Press <strong>Apply to this map</strong> to re-optimize the districts for the new electorate.</p>
 
       <h3>Changing settings without starting over</h3>
       <p>Once a map is drawn, you can change any setting (goal, safe-seat floor, shape, population tolerance, counties, effort, superthinking) and press <strong>Apply to this map</strong>. The new run starts from the districts on screen instead of a random map, so you can, say, draw a fair map and then gerrymander it. <strong>Start over</strong> always draws a fresh random map. Changing the number of districts or the state needs a fresh map.</p>

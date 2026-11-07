@@ -50,7 +50,6 @@
     csv: $("rd-csv"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
     apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
-    swing: $("rd-swing"), swingOut: $("rd-swing-out"), swingReset: $("rd-swing-reset"), swingNum: $("rd-swing-num"),
   };
 
   const S = {
@@ -144,11 +143,7 @@
     const np = meta.precincts.id.length;
     const pmargin = new Float64Array(np);
     for (let p = 0; p < np; p++) { const t = meta.precincts.dem[p] + meta.precincts.rep[p]; pmargin[p] = t > 0 ? (100 * (meta.precincts.dem[p] - meta.precincts.rep[p])) / t : 0; }
-    S.D = { meta, A, overview, raster: meta.raster, graph, n: meta.n, pop, populated, share: dem / (dem + rep), pmargin0: pmargin, pmargin, np, colors: new Uint32Array(meta.n) };
-    // the swing slider starts at the actual 2024 margin
-    setSwingValue(actualMargin());
-    S.swing = null;
-    syncSwing();
+    S.D = { meta, A, overview, raster: meta.raster, graph, n: meta.n, pop, populated, share: dem / (dem + rep), pmargin, np, colors: new Uint32Array(meta.n) };
     el.statline.innerHTML = "<strong>" + escapeHtml(meta.name) + "</strong>: " + fmt(meta.n) + " census blocks · " + fmt(pop) + " people<br>2024: Harris " + pct(dem / (dem + rep)) + " · Trump " + pct(rep / (dem + rep)) + " (two-party)";
     el.k.value = meta.seats;
     el.target.dataset.touched = "";
@@ -189,7 +184,7 @@
     el.kHint.textContent = hint;
     el.target.max = k;
     if (+el.target.value > k) el.target.value = k;
-    if (!el.target.dataset.touched) el.target.value = Math.round(k * (S.D.shareNow || S.D.share));
+    if (!el.target.dataset.touched) el.target.value = Math.round(k * S.D.share);
     syncTarget();
     // show the tolerance in people
     for (const o of el.tol.options) {
@@ -227,109 +222,6 @@
     el.marginOut.textContent = mode() === "competitive" ? "±" + v + " pts" : v === 0 ? "any win" : v + "+ pts";
   }
 
-  // ---------- popular-vote swing ----------
-  function marginLabel(m) { return Math.abs(m) < 0.05 ? "even" : (m > 0 ? "D+" : "R+") + Math.abs(m).toFixed(1); }
-  function actualMargin() { return 100 * (2 * S.D.share - 1); }
-  function round1(x) { return Math.round(x * 10) / 10; }
-  function setSwingValue(m) { el.swing.value = String(round1(m)); el.swingNum.value = round1(m).toFixed(1); }
-  function syncSwing(fromNumber) {
-    if (!S.D) return;
-    const actual = actualMargin();
-    const m = round1(+el.swing.value);
-    if (!fromNumber) el.swingNum.value = m.toFixed(1);
-    const tD = (1 + m / 100) / 2;
-    if (Math.abs(m - round1(actual)) < 0.05) {
-      S.swing = null;
-      el.swingOut.textContent = marginLabel(actual) + " (actual)";
-    } else {
-      // scale each party's votes so the statewide two-party result becomes tD
-      S.swing = { margin: m, tD, fD: tD / S.D.share, fR: (1 - tD) / (1 - S.D.share) };
-      el.swingOut.textContent = marginLabel(m) + " · " + (100 * tD).toFixed(1) + " D / " + (100 - 100 * tD).toFixed(1) + " R";
-    }
-    el.swing.title = "Actual 2024: " + marginLabel(actual);
-    // precinct colors follow the swing
-    const meta = S.D.meta, pm = S.swing ? new Float64Array(S.D.np) : S.D.pmargin0;
-    if (S.swing) for (let q = 0; q < S.D.np; q++) {
-      const d = meta.precincts.dem[q] * S.swing.fD, r = meta.precincts.rep[q] * S.swing.fR;
-      pm[q] = d + r > 0 ? (100 * (d - r)) / (d + r) : 0;
-    }
-    S.D.pmargin = pm;
-    S.D.shareNow = S.swing ? S.swing.tD : S.D.share;
-    if (!el.target.dataset.touched) el.target.value = Math.round(kValue() * S.D.shareNow);
-    syncTarget();
-    if (S.map && S.colorMode === "precinct") renderPlan();
-    schedulePreview();
-  }
-
-  // ---------- preview: the current map under a different electorate ----------
-  // Recomputes each district's votes from its blocks with the new swing, without
-  // rerunning anything. "Apply to this map" re-optimizes for the new electorate.
-  let previewQueued = false;
-  function schedulePreview() {
-    if (previewQueued) return;
-    previewQueued = true;
-    requestAnimationFrame(() => { previewQueued = false; previewSwing(); });
-  }
-  function swingLabel(m) { return m == null ? marginLabel(actualMargin()) + " (actual 2024)" : marginLabel(m); }
-  function previewSwing() {
-    if (!S.D || !S.landAssign || !S.reportBase || (S.running && !S.paused)) return;
-    const drawn = S.opts ? S.opts.swing : null, now = S.swing ? S.swing.margin : null;
-    if (drawn === now) S.report = S.reportBase;
-    else S.report = recalcReport(S.reportBase, S.landAssign, now);
-    renderPlan();
-    renderResults();
-    if (S.report.preview) {
-      el.statusText.innerHTML = "<strong>Previewing this map at " + escapeHtml(swingLabel(now)) + "</strong> (drawn for " + escapeHtml(swingLabel(drawn)) +
-        "). Same districts, votes recalculated. Press <em>Apply to this map</em> to redraw it for this electorate.";
-    } else if (S.liveReport) {
-      renderStatus(S.paused ? "paused" : "done");
-    }
-  }
-  function recalcReport(base, la, now) {
-    const g = S.D.graph, k = base.k;
-    const fD = S.swing ? S.swing.fD : 1, fR = S.swing ? S.swing.fR : 1;
-    const D0 = new Float64Array(k), R0 = new Float64Array(k);
-    for (let u = 0; u < g.n; u++) { D0[la[u]] += g.dem[u]; R0[la[u]] += g.rep[u]; }
-    const h = (S.opts.margin || 0) / 200, band = (S.opts.band == null ? 5 : S.opts.band) / 200;
-    let winD = 0, safeD = 0, safeR = 0, comp = 0, wastedD = 0, wastedR = 0, votes = 0;
-    const districts = base.districts.map((d) => {
-      const dem = D0[d.id] * fD, rep = R0[d.id] * fR, t = dem + rep, sh = t > 0 ? dem / t : 0.5;
-      if (sh > 0.5) winD++;
-      if (sh >= 0.5 + h) safeD++;
-      if (sh <= 0.5 - h) safeR++;
-      if (Math.abs(2 * sh - 1) <= 2 * band) comp++;
-      if (dem > rep) { wastedD += dem - t / 2; wastedR += rep; } else { wastedR += rep - t / 2; wastedD += dem; }
-      votes += t;
-      return Object.assign({}, d, { dem, rep, share: sh });
-    });
-    const sorted = districts.map((d) => d.share).sort((a, b) => a - b);
-    const median = k % 2 ? sorted[(k - 1) / 2] : (sorted[k / 2 - 1] + sorted[k / 2]) / 2;
-    const mean = sorted.reduce((a, b) => a + b, 0) / k;
-    let gerry = null;
-    if (base.gerry) {
-      const D = S.opts.mode === "maxD";
-      const margins = districts.map((d) => 200 * (D ? d.share : 1 - d.share) - 100).sort((a, b) => b - a);
-      gerry = { floor: base.gerry.floor, safe: margins.filter((m) => m >= base.gerry.floor - 1e-9).length, wins: margins.filter((m) => m > 0).length, margins };
-    }
-    return Object.assign({}, base, {
-      districts, seats: { winD, safeD, safeR, comp }, stateShare: S.D.shareNow,
-      efficiencyGap: (wastedD - wastedR) / votes, meanMedian: median - mean, gerry,
-      goal: { achieved: false, text: "This map at " + swingLabel(now) + " (it was drawn for " + swingLabel(S.opts.swing) + ")." },
-      preview: true, previewSwing: now,
-    });
-  }
-  // graph sent to the engine: votes scaled by the swing (the original is kept)
-  function swungGraph() {
-    const g = S.D.graph;
-    if (!S.swing) return g;
-    if (S.swungFor === S.swing.margin && S.swungGraphCache) return S.swungGraphCache;
-    const dem = new Float64Array(g.n), rep = new Float64Array(g.n);
-    for (let u = 0; u < g.n; u++) { dem[u] = g.dem[u] * S.swing.fD; rep[u] = g.rep[u] * S.swing.fR; }
-    S.swungGraphCache = Object.assign({}, g, { dem, rep });
-    S.swungFor = S.swing.margin;
-    return S.swungGraphCache;
-  }
-
   function buildOpts() {
     const k = kValue();
     el.k.value = k;
@@ -341,7 +233,6 @@
     return {
       k, mode: m, seed,
       compact: el.form.elements.compact.value !== "0",
-      swing: S.swing ? S.swing.margin : null,
       endless: el.superOn.checked,
       tol: +el.tol.value,
       targetD: Math.min(k, +el.target.value),
@@ -398,7 +289,7 @@
     if (S.colorMode === "precinct") setColorMode("lean");
     w.onmessage = (ev) => onWorker(ev.data);
     w.onerror = (e) => { setStatus("error", 0, "Something went wrong: " + escapeHtml(e.message || "worker error")); stopWorker(); };
-    w.postMessage({ cmd: "init", graph: swungGraph(), opts });
+    w.postMessage({ cmd: "init", graph: S.D.graph, opts });
   }
   function onWorker(msg) {
     if (msg.type === "error") { setStatus("error", 0, escapeHtml(msg.message)); stopWorker(); return; }
@@ -423,7 +314,6 @@
       el.run.textContent = "Start over";
     }
     syncApply();
-    if (final || msg.type === "paused") previewSwing();
   }
 
   function showLiveOrBest(final) {
@@ -435,7 +325,6 @@
       S.expandedFrom = S.landAssign;
     }
     S.assign = S.landAssign ? S.expanded : null;
-    S.reportBase = S.report;
   }
 
   // ---------- status ----------
@@ -614,12 +503,11 @@
     }
     const D = S.D, A = D.A, m = D.meta, g = D.graph, li = g.attach[u];
     const p = A.precinct[u];
-    const fD = S.swing ? S.swing.fD : 1, fR = S.swing ? S.swing.fR : 1;
-    const pd = m.precincts.dem[p] * fD, pr = m.precincts.rep[p] * fR, pt = pd + pr;
+    const pd = m.precincts.dem[p], pr = m.precincts.rep[p], pt = pd + pr;
     const county = m.counties[A.county[u]].name;
     const pname = m.precincts.id[p].replace(/^\d{5}-?/, "") || m.precincts.id[p];
     let html = '<div class="rd-tip-h">Block ' + blockGeoid(u) + ' <span class="muted">' + escapeHtml(county) + "</span></div>" +
-      '<div class="mono small">' + fmt(A.pop[u]) + " people" + (g.dem[li] + g.rep[li] >= 0.5 ? " · est. " + fmt(g.dem[li] * fD) + " Harris, " + fmt(g.rep[li] * fR) + " Trump" + (S.swing ? " (swung)" : "") : "") + "</div>" +
+      '<div class="mono small">' + fmt(A.pop[u]) + " people" + (g.dem[li] + g.rep[li] >= 0.5 ? " · est. " + fmt(g.dem[li]) + " Harris, " + fmt(g.rep[li]) + " Trump" : "") + "</div>" +
       '<div class="mono small muted">Precinct ' + escapeHtml(pname) + ": " + (pt ? "Harris " + pct(pd / pt) + " · Trump " + pct(pr / pt) : "no votes reported") + "</div>";
     let di = -1;
     if (S.assign && S.report) {
@@ -662,16 +550,13 @@
     const dWins = r.seats.winD, rWins = k - dWins;
     const goal = r.goal || {};
     const settled = r.phase === "done" || r.phase === "polish" || r.phase === "final" || r.stage === "block";
-    const goalCls = r.preview ? "" : settled ? (goal.achieved ? "is-good" : S.opts.mode === "neutral" ? "" : "is-warn") : "";
+    const goalCls = settled ? (goal.achieved ? "is-good" : S.opts.mode === "neutral" ? "" : "is-warn") : "";
     const c = r.contiguity;
     const tiles = [];
     tiles.push(tile("Seats", '<span class="party-d-ink">' + fmt(dWins) + " D</span> – <span class=\"party-r-ink\">" + fmt(rWins) + " R</span>",
       escapeHtml(goal.text || "") + (!r.gerry && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
     if (r.gerry) tiles.push(tile("Gerrymander result", gerryBars(r), "Safe seats were maximized first, then wins under the floor; then every other district, best first, was pushed as close to the floor as it would go without giving up a seat. Safe seats could shed surplus votes to help, but never below the floor.", "rd-tile-wide"));
-    tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0),
-      (r.preview ? r.previewSwing : S.opts.swing) != null
-        ? "Democratic share of the two-party vote after your swing to " + marginLabel(r.preview ? r.previewSwing : S.opts.swing) + " (actual 2024: " + marginLabel(100 * (2 * S.D.share - 1)) + "), and of seats"
-        : "Harris share of the two-party vote, and of seats"));
+    tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
     if (c) {
       tiles.push(tile("Contiguity", c.ok ? "✓ all " + fmt(k) : "✗ " + c.broken.length + " broken",
         c.ok
@@ -693,11 +578,7 @@
 
     renderChart(r);
     renderTable(r);
-    const sw = r.preview ? r.previewSwing : S.opts.swing;
-    const swingNote = sw != null && S.D
-      ? "Votes swung to " + marginLabel(sw) + " statewide: every Harris vote ×" + ((1 + sw / 100) / 2 / S.D.share).toFixed(3) + ", every Trump vote ×" + ((1 - sw / 100) / 2 / (1 - S.D.share)).toFixed(3) + ". District results below use the swung votes."
-      : r.preview ? "Showing the actual 2024 votes on a map drawn for " + marginLabel(S.opts.swing) + "." : "";
-    el.notes.innerHTML = [swingNote].concat(r.notes || []).filter(Boolean).map(escapeHtml).join(" ");
+    el.notes.innerHTML = (r.notes || []).map(escapeHtml).join(" ");
   }
 
   // safe seats, narrower wins, then every other district's margin, best first
@@ -796,9 +677,6 @@
   // ---------- wiring ----------
   el.form.addEventListener("submit", (e) => { e.preventDefault(); start(false); });
   el.apply.addEventListener("click", () => start(true));
-  el.swing.addEventListener("input", syncSwing);
-  el.swingReset.addEventListener("click", () => { if (!S.D) return; setSwingValue(actualMargin()); syncSwing(); });
-  el.swingNum.addEventListener("input", () => { const v = parseFloat(el.swingNum.value); if (!Number.isFinite(v)) return; el.swing.value = String(Math.max(-40, Math.min(40, v))); syncSwing(true); });
   el.form.elements.state.forEach((r) => r.addEventListener("change", () => loadState(r.value)));
   el.form.elements.mode.forEach((r) => r.addEventListener("change", syncMode));
   el.k.addEventListener("input", syncK);
