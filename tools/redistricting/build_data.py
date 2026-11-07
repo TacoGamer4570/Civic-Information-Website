@@ -15,7 +15,7 @@ For each state this script:
 
 Usage:
   pip install shapely pyproj numpy scipy geopandas rasterio
-  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN] [--cache DIR]
+  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN CO OR WA NH] [--cache DIR]
 
 Downloads (~1.8 GB) are cached in --cache (default .cache/redistricting).
 """
@@ -51,6 +51,10 @@ STATES = {
     "NY": {"fips": "36", "name": "New York", "seats": 26, "pl": "New_York"},
     "IL": {"fips": "17", "name": "Illinois", "seats": 17, "pl": "Illinois"},
     "MN": {"fips": "27", "name": "Minnesota", "seats": 8, "pl": "Minnesota"},
+    "CO": {"fips": "08", "name": "Colorado", "seats": 8, "pl": "Colorado"},
+    "OR": {"fips": "41", "name": "Oregon", "seats": 6, "pl": "Oregon"},
+    "WA": {"fips": "53", "name": "Washington", "seats": 10, "pl": "Washington"},
+    "NH": {"fips": "33", "name": "New Hampshire", "seats": 2, "pl": "New_Hampshire"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
