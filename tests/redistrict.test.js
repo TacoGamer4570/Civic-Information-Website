@@ -184,6 +184,28 @@ test("superthinking: cycles keep the best map, never get worse, and stop cleanly
   assert.ok(connectedParts(G, e.assignment(), 6).every((c) => c === 1));
 });
 
+test("apply new settings to an existing map: starts from it, stays valid", () => {
+  const raw = grid(30, 30);
+  const base = { k: 5, tol: 0.02, seed: 4, searchSteps: 3000, coarsePolishSteps: 3000, finePolishSteps: 3000 };
+  const p1 = RE.createPipeline(G, raw.group, Object.assign({}, base, { mode: "neutral" }));
+  p1.init(); while (!p1.run(1000));
+  const first = Int32Array.from(p1.assignment());
+  // same settings, started from that map: the map barely changes
+  const p2 = RE.createPipeline(G, raw.group, Object.assign({}, base, { mode: "neutral", seed: 9, startAssign: first }));
+  p2.init(); while (!p2.run(1000));
+  const same = p2.assignment().reduce((a, d, u) => a + (d === first[u] ? 1 : 0), 0) / G.n;
+  assert.ok(same > 0.6, "kept most of the map: " + same.toFixed(2));
+  // new goal on top of it: still contiguous and balanced
+  const p3 = RE.createPipeline(G, raw.group, Object.assign({}, base, { mode: "maxR", margin: 2, startAssign: first }));
+  p3.init(); while (!p3.run(1000));
+  const r = p3.report(true);
+  assert.ok(r.contiguity.ok && r.maxDev <= 0.02 + 1e-9);
+  // superthinking can start from it too
+  const e = RE.createEndless(G, raw.group, Object.assign({}, base, { mode: "neutral", startAssign: first, endless: true }));
+  e.init(); e.run(300); e.stop();
+  assert.ok(e.report(true).contiguity.ok);
+});
+
 console.log("state data files");
 const EXPECT = {
   TX: { pop: 29145505, seats: 38, share: 0.4305 },

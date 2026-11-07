@@ -797,7 +797,7 @@
         if (opts.initialAssign) {
           assign.set(opts.initialAssign);
           const moved = repairContiguity();
-          if (moved) notes.push("Reconnected " + moved.toLocaleString("en-US") + " stray " + unitName + "s when switching to census blocks.");
+          if (moved) notes.push("Reconnected " + moved.toLocaleString("en-US") + " stray " + unitName + (moved === 1 ? "" : "s") + " so every district stays in one piece.");
         } else {
           initialPlan();
           if (mass) repairContiguity();
@@ -1271,12 +1271,14 @@
       }
       function startCycle() {
         cycle++;
-        const fresh = !best || cycle % 4 === 1;
+        // cycle 1 starts from the map you gave it (if any); later ones from the best so far,
+        // except every 4th, which starts fresh
+        const given = !best && cycle === 1 ? opts.startAssign || null : null;
         // later cycles search harder (up to 4x the normal budget)
         const boost = Math.min(4, 1 + 0.5 * (cycle - 1));
         pipe = createPipeline(fine, group, Object.assign({}, opts, {
           seed: (baseSeed + cycle * 7919) >>> 0,
-          startAssign: fresh ? null : best.assign,
+          startAssign: given || (best && cycle % 4 !== 1 ? best.assign : null),
           searchSteps: Math.round((opts.searchSteps || 40000) * boost),
         }));
         pipe.init();

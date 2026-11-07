@@ -48,6 +48,7 @@
     results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
     csv: $("rd-csv"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
+    apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
   };
 
   const S = {
@@ -108,8 +109,9 @@
   async function loadState(st) {
     stopWorker();
     S.st = st;
-    S.assign = null; S.report = null;
+    S.assign = null; S.report = null; S.landAssign = null; S.liveAssign = null; S.liveReport = null; S.best = null;
     el.results.hidden = true;
+    syncApply();
     el.run.disabled = true;
     el.loading.hidden = false;
     el.loading.innerHTML = '<span class="mono">loading ' + STATES[st].name + ' census blocks…</span>';
@@ -189,6 +191,7 @@
       const people = Math.max(1, Math.round(ideal * t));
       o.textContent = "±" + +(t * 100).toPrecision(2) + "% (±" + fmt(people) + " " + (people === 1 ? "person" : "people") + ")" + (o.dataset.note ? " " + o.dataset.note : "");
     }
+    syncApply();
   }
   function syncTarget() {
     const k = +el.target.max, d = +el.target.value;
@@ -247,25 +250,41 @@
     S.running = false; S.paused = false;
     el.pause.disabled = true; el.skip.disabled = true; el.pause.textContent = "Pause";
     el.skip.textContent = "Skip phase";
-    el.run.textContent = "Draw the map";
+    el.run.textContent = S.landAssign ? "Start over" : "Draw the map";
+    syncApply();
   }
-  function start() {
+  // "Apply to this map": rerun with the current settings, starting from the map on
+  // screen. Needs the same state and number of districts.
+  function syncApply() {
+    const has = !!(S.D && S.landAssign && S.report);
+    el.apply.hidden = !has;
+    el.applyHint.hidden = !has;
+    if (!has) return;
+    const sameK = kValue() === S.report.k;
+    el.apply.disabled = !sameK;
+    el.applyHint.textContent = sameK
+      ? "Change any setting above, then apply it: the run starts from the districts on the map. Start over draws a new random map instead."
+      : "The number of districts changed, so this needs a fresh map: use Start over.";
+  }
+  function start(fromCurrent) {
     if (!S.D) return;
+    const startAssign = fromCurrent && S.landAssign && S.report && kValue() === S.report.k ? Int32Array.from(S.landAssign) : null;
     stopWorker();
     const opts = buildOpts();
+    if (startAssign) opts.startAssign = startAssign;
     S.opts = opts;
     if (!S.workerUrl) S.workerUrl = URL.createObjectURL(new Blob([window.RedistrictEngine.workerSource], { type: "text/javascript" }));
     const w = new Worker(S.workerUrl);
     S.worker = w;
     S.running = true;
-    S.prevDistColor = [];
-    S.assign = null;
-    S.best = null; S.liveReport = null;
+    if (!startAssign) { S.prevDistColor = []; S.assign = null; S.landAssign = null; S.liveAssign = null; }
+    S.best = null;
     el.run.textContent = "Start over";
+    el.apply.disabled = true;
     el.pause.disabled = false; el.skip.disabled = false;
     el.skip.textContent = opts.endless ? "Stop & keep best" : "Skip phase";
     el.liveWrap.hidden = !opts.endless;
-    setStatus("init", 0, "Building a random starting map…");
+    setStatus("init", 0, startAssign ? "Starting from your current map with the new settings…" : "Building a random starting map…");
     if (S.colorMode === "precinct") setColorMode("lean");
     w.onmessage = (ev) => onWorker(ev.data);
     w.onerror = (e) => { setStatus("error", 0, "Something went wrong: " + escapeHtml(e.message || "worker error")); stopWorker(); };
@@ -291,8 +310,9 @@
     if (final) {
       S.running = false;
       el.pause.disabled = true; el.skip.disabled = true;
-      el.run.textContent = "Draw another";
+      el.run.textContent = "Start over";
     }
+    syncApply();
   }
 
   function showLiveOrBest(final) {
@@ -654,7 +674,8 @@
   }
 
   // ---------- wiring ----------
-  el.form.addEventListener("submit", (e) => { e.preventDefault(); start(); });
+  el.form.addEventListener("submit", (e) => { e.preventDefault(); start(false); });
+  el.apply.addEventListener("click", () => start(true));
   el.form.elements.state.forEach((r) => r.addEventListener("change", () => loadState(r.value)));
   el.form.elements.mode.forEach((r) => r.addEventListener("change", syncMode));
   el.k.addEventListener("input", syncK);

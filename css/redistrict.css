@@ -216,3 +216,8 @@
 .rd-chips-l { font-size: .75rem; font-weight: 500; letter-spacing: 0; color: var(--muted); width: 100%; }
 .rd-chip { font-family: var(--mono); font-size: .72rem; font-weight: 700; letter-spacing: 0; padding: 2px 6px; border: 1.5px solid var(--line); border-radius: 999px; background: var(--paper); }
 .rd-chip.is-win { background: var(--lime); color: var(--on-accent); }
+
+/* apply new settings to the current map */
+.rd-apply { width: 100%; background: var(--sky); color: var(--on-accent); }
+.rd-apply[hidden], .rd-apply-hint[hidden] { display: none; }
+.rd-apply-hint { margin: -4px 0 2px; }

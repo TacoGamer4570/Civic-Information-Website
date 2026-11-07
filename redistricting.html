@@ -159,6 +159,8 @@
         </label>
 
         <div class="rd-actions">
+          <button type="button" class="btn btn-lg rd-apply" id="rd-apply" hidden>Apply to this map</button>
+          <p class="hint small muted rd-apply-hint" id="rd-apply-hint" hidden></p>
           <button type="submit" class="btn btn-primary btn-lg" id="rd-run" disabled>Draw the map</button>
           <div class="rd-actions-row">
             <button type="button" class="btn btn-ghost" id="rd-pause" disabled>Pause</button>
@@ -272,6 +274,9 @@
         <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>
       <p>Last, every district is checked with a graph search: on each land mass it must be a single piece connected over land, so no part of a district can be stranded inside another one and reached only across water. The same rule is enforced on every move along the way.</p>
+
+      <h3>Changing settings without starting over</h3>
+      <p>Once a map is drawn, you can change any setting (goal, safe-seat floor, shape, population tolerance, counties, effort, superthinking) and press <strong>Apply to this map</strong>. The new run starts from the districts on screen instead of a random map, so you can, say, draw a fair map and then gerrymander it. <strong>Start over</strong> always draws a fresh random map. Changing the number of districts or the state needs a fresh map.</p>
 
       <h3>Superthinking</h3>
       <p>With Superthinking on, the whole sequence runs again and again. Each finished cycle is compared with the best map so far: first on your goal (seats won, or how close to your target split), then on compactness (or population balance, if you're ignoring compactness). Only maps within your population tolerance and fully connected count. Most cycles start from the best map and push further, with gerrymander goals always aiming one seat higher, and later cycles search harder. Every fourth cycle starts from a fresh random map to get out of dead ends. It never stops on its own, even if your goal can't be reached; press <strong>Stop &amp; keep best</strong>.</p>
