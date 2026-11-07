@@ -15,7 +15,7 @@ For each state this script:
 
 Usage:
   pip install shapely pyproj numpy scipy geopandas rasterio
-  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN CO OR WA NH MD MA NJ TN IN MO SC AL] [--cache DIR]
+  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN CO OR WA NH MD MA NJ TN IN MO SC AL MT] [--cache DIR]
 
 Downloads (~1.8 GB) are cached in --cache (default .cache/redistricting).
 """
@@ -63,6 +63,7 @@ STATES = {
     "MO": {"fips": "29", "name": "Missouri", "seats": 8, "pl": "Missouri"},
     "SC": {"fips": "45", "name": "South Carolina", "seats": 7, "pl": "South_Carolina"},
     "AL": {"fips": "01", "name": "Alabama", "seats": 7, "pl": "Alabama"},
+    "MT": {"fips": "30", "name": "Montana", "seats": 2, "pl": "Montana"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
