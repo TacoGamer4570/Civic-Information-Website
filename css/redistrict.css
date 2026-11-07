@@ -221,3 +221,8 @@
 .rd-apply { width: 100%; background: var(--sky); color: var(--on-accent); }
 .rd-apply[hidden], .rd-apply-hint[hidden] { display: none; }
 .rd-apply-hint { margin: -4px 0 2px; }
+
+/* popular-vote swing: readout on its own line */
+#rd-swing-field .rd-range { flex-wrap: wrap; }
+#rd-swing-field .rd-range input[type="range"] { flex-basis: 100%; }
+#rd-swing-out { min-width: 0; text-align: left; white-space: normal; }
