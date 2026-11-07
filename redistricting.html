@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Redistricting Simulator — ballot/decoded</title>
-  <meta name="description" content="Draw congressional maps for 23 states: California, Texas, Florida, New York, Pennsylvania, Illinois, Ohio, Georgia, North Carolina, Michigan, New Jersey, Virginia, Washington, Arizona, Massachusetts, Tennessee, Colorado, Maryland, Wisconsin, Minnesota, Oregon, Nevada, or New Hampshire with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
+  <meta name="description" content="Draw congressional maps for 27 states: California, Texas, Florida, New York, Illinois, Pennsylvania, Ohio, Georgia, North Carolina, Michigan, New Jersey, Virginia, Washington, Arizona, Indiana, Massachusetts, Tennessee, Colorado, Maryland, Minnesota, Missouri, Wisconsin, Alabama, South Carolina, Oregon, Nevada, or New Hampshire with a Markov chain Monte Carlo algorithm, using every 2020 Census block, 2024 presidential results, and exact census population. Fair, proportional, or gerrymandered: you pick.">
   <meta name="theme-color" content="#FFF7EA">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='14' fill='%23D4FF3F' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M18 33l9 9 19-21' fill='none' stroke='%23141414' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -44,8 +44,8 @@
             <label title="Texas"><input type="radio" name="state" value="TX" aria-label="Texas" checked><span>TX<small>38 seats</small></span></label>
             <label title="Florida"><input type="radio" name="state" value="FL" aria-label="Florida"><span>FL<small>28 seats</small></span></label>
             <label title="New York"><input type="radio" name="state" value="NY" aria-label="New York"><span>NY<small>26 seats</small></span></label>
-            <label title="Pennsylvania"><input type="radio" name="state" value="PA" aria-label="Pennsylvania"><span>PA<small>17 seats</small></span></label>
             <label title="Illinois"><input type="radio" name="state" value="IL" aria-label="Illinois"><span>IL<small>17 seats</small></span></label>
+            <label title="Pennsylvania"><input type="radio" name="state" value="PA" aria-label="Pennsylvania"><span>PA<small>17 seats</small></span></label>
             <label title="Ohio"><input type="radio" name="state" value="OH" aria-label="Ohio"><span>OH<small>15 seats</small></span></label>
             <label title="Georgia"><input type="radio" name="state" value="GA" aria-label="Georgia"><span>GA<small>14 seats</small></span></label>
             <label title="North Carolina"><input type="radio" name="state" value="NC" aria-label="North Carolina"><span>NC<small>14 seats</small></span></label>
@@ -54,12 +54,16 @@
             <label title="Virginia"><input type="radio" name="state" value="VA" aria-label="Virginia"><span>VA<small>11 seats</small></span></label>
             <label title="Washington"><input type="radio" name="state" value="WA" aria-label="Washington"><span>WA<small>10 seats</small></span></label>
             <label title="Arizona"><input type="radio" name="state" value="AZ" aria-label="Arizona"><span>AZ<small>9 seats</small></span></label>
+            <label title="Indiana"><input type="radio" name="state" value="IN" aria-label="Indiana"><span>IN<small>9 seats</small></span></label>
             <label title="Massachusetts"><input type="radio" name="state" value="MA" aria-label="Massachusetts"><span>MA<small>9 seats</small></span></label>
             <label title="Tennessee"><input type="radio" name="state" value="TN" aria-label="Tennessee"><span>TN<small>9 seats</small></span></label>
             <label title="Colorado"><input type="radio" name="state" value="CO" aria-label="Colorado"><span>CO<small>8 seats</small></span></label>
             <label title="Maryland"><input type="radio" name="state" value="MD" aria-label="Maryland"><span>MD<small>8 seats</small></span></label>
-            <label title="Wisconsin"><input type="radio" name="state" value="WI" aria-label="Wisconsin"><span>WI<small>8 seats</small></span></label>
             <label title="Minnesota"><input type="radio" name="state" value="MN" aria-label="Minnesota"><span>MN<small>8 seats</small></span></label>
+            <label title="Missouri"><input type="radio" name="state" value="MO" aria-label="Missouri"><span>MO<small>8 seats</small></span></label>
+            <label title="Wisconsin"><input type="radio" name="state" value="WI" aria-label="Wisconsin"><span>WI<small>8 seats</small></span></label>
+            <label title="Alabama"><input type="radio" name="state" value="AL" aria-label="Alabama"><span>AL<small>7 seats</small></span></label>
+            <label title="South Carolina"><input type="radio" name="state" value="SC" aria-label="South Carolina"><span>SC<small>7 seats</small></span></label>
             <label title="Oregon"><input type="radio" name="state" value="OR" aria-label="Oregon"><span>OR<small>6 seats</small></span></label>
             <label title="Nevada"><input type="radio" name="state" value="NV" aria-label="Nevada"><span>NV<small>4 seats</small></span></label>
             <label title="New Hampshire"><input type="radio" name="state" value="NH" aria-label="New Hampshire"><span>NH<small>2 seats</small></span></label>

@@ -11,7 +11,8 @@
     MN: { name: "Minnesota", seats: 8 }, CO: { name: "Colorado", seats: 8 }, OR: { name: "Oregon", seats: 6 },
     WA: { name: "Washington", seats: 10 }, NH: { name: "New Hampshire", seats: 2 },
     MD: { name: "Maryland", seats: 8 }, MA: { name: "Massachusetts", seats: 9 }, NJ: { name: "New Jersey", seats: 12 },
-    TN: { name: "Tennessee", seats: 9 },
+    TN: { name: "Tennessee", seats: 9 }, IN: { name: "Indiana", seats: 9 }, MO: { name: "Missouri", seats: 8 },
+    SC: { name: "South Carolina", seats: 7 }, AL: { name: "Alabama", seats: 7 },
   };
   // steps for the partisan search; polishing steps per precinct (first stage) and per block (second stage)
   const EFFORT = {
