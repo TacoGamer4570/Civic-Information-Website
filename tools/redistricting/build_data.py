@@ -15,7 +15,7 @@ For each state this script:
 
 Usage:
   pip install shapely pyproj numpy scipy geopandas rasterio
-  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN CO OR WA NH] [--cache DIR]
+  python3 tools/redistricting/build_data.py [TX CA PA VA NC FL MI OH GA NV WI AZ NY IL MN CO OR WA NH MD MA NJ TN] [--cache DIR]
 
 Downloads (~1.8 GB) are cached in --cache (default .cache/redistricting).
 """
@@ -55,6 +55,10 @@ STATES = {
     "OR": {"fips": "41", "name": "Oregon", "seats": 6, "pl": "Oregon"},
     "WA": {"fips": "53", "name": "Washington", "seats": 10, "pl": "Washington"},
     "NH": {"fips": "33", "name": "New Hampshire", "seats": 2, "pl": "New_Hampshire"},
+    "MD": {"fips": "24", "name": "Maryland", "seats": 8, "pl": "Maryland"},
+    "MA": {"fips": "25", "name": "Massachusetts", "seats": 9, "pl": "Massachusetts"},
+    "NJ": {"fips": "34", "name": "New Jersey", "seats": 12, "pl": "New_Jersey"},
+    "TN": {"fips": "47", "name": "Tennessee", "seats": 9, "pl": "Tennessee"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"

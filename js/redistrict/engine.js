@@ -729,7 +729,11 @@
         wPop = p === "final" ? 1e6 : p === "polish" ? tune.popW0 : 1000;
         if (p === "balance") {
           // compactness counts too, so moves inside the population band aren't free
-          wPart = 0; wComp = compact ? 1 : 0; wCty = wCounty; T0 = tune.balanceT0; T1 = tune.balanceT1; recomProb = tune.balanceRecom;
+          // county splits only as a light tie-breaker here: where districts follow county
+          // lines, a full penalty would block every move that can fix population
+          // Compactness only lightly (enough to stop aimless wandering, not enough to
+          // block moves that fix population, which matters with big rural blocks)
+          wPart = 0; wComp = compact ? 0.1 : 0; wCty = wCounty * 0.05; T0 = tune.balanceT0; T1 = tune.balanceT1; recomProb = tune.balanceRecom;
           phaseBudget = Math.max(20000, searchBudget, 3 * n, 2000 * k);
         } else if (p === "search") {
           wPart = 1; wComp = compact ? tune.searchComp : 0; wCty = wCounty * tune.searchComp; T0 = tune.searchT0; T1 = tune.searchT1;
@@ -765,12 +769,14 @@
         phase = "done";
       }
       // Locks for the later phases. For gerrymanders, each district below the floor
-      // keeps (almost) its level: 0.2 points of slack so borders can still be smoothed.
+      // keeps (almost) its level: up to 1 point of margin of slack, so the
+      // census-block stage can still balance population and smooth borders.
+      const LOCK_SLACK = 0.005;
       function currentLock() {
         if (!isMax) return { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
         const b = partySorted(new Float64Array(k)), pos = new Float64Array(k).fill(-Infinity);
         for (let q = 0; q < cntTier[0]; q++) pos[q] = thFloor; // safe seats: anywhere at or above the floor
-        if (posOn) for (let q = cntTier[0]; q < k; q++) pos[q] = Math.min(b[q], thFloor) - 0.001;
+        if (posOn) for (let q = cntTier[0]; q < k; q++) pos[q] = Math.min(b[q], thFloor) - LOCK_SLACK;
         return { tiers: Array.from(cntTier), pos };
       }
       function startNextTarget(first) {
