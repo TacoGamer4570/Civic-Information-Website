@@ -236,6 +236,9 @@ const EXPECT = {
   SC: { pop: 5118425, seats: 7, share: 0.4093 },
   AL: { pop: 5024279, seats: 7, share: 0.3457 },
   MT: { pop: 1084225, seats: 2, share: 0.3971 },
+  KY: { pop: 4505836, seats: 6, share: 0.3449 },
+  LA: { pop: 4657757, seats: 6, share: 0.3882 },
+  IA: { pop: 3190369, seats: 4, share: 0.4328 },
 };
 const loaded = {};
 for (const st of Object.keys(EXPECT)) {

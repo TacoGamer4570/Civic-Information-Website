@@ -13,6 +13,7 @@
     MD: { name: "Maryland", seats: 8 }, MA: { name: "Massachusetts", seats: 9 }, NJ: { name: "New Jersey", seats: 12 },
     TN: { name: "Tennessee", seats: 9 }, IN: { name: "Indiana", seats: 9 }, MO: { name: "Missouri", seats: 8 },
     SC: { name: "South Carolina", seats: 7 }, AL: { name: "Alabama", seats: 7 }, MT: { name: "Montana", seats: 2 },
+    KY: { name: "Kentucky", seats: 6 }, LA: { name: "Louisiana", seats: 6 }, IA: { name: "Iowa", seats: 4 },
   };
   // steps for the partisan search; polishing steps per precinct (first stage) and per block (second stage)
   const EFFORT = {
