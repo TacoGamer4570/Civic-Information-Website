@@ -132,7 +132,7 @@
       const unitName = opts.unitName || "precinct";
       const tune = Object.assign({
         searchRecom: 0.6, searchT0: 0.5, searchT1: 0.01, searchComp: 0.05,
-        polishRecom: 0.03, polishT0: 0.2, polishT1: 0.001, popW0: 30, popW1: 10000,
+        polishRecom: 0.03, polishT0: 0.2, polishT1: 0.001, popW0: 30, popW1: 10000, polishFair: 1,
         balanceRecom: 0.3, balanceT0: 0.05, balanceT1: 0.001,
       }, opts.tune || {});
       // county bookkeeping costs nc*k memory; skip it when that's huge
@@ -159,6 +159,12 @@
       let needD = 0, needR = 0;
       if (mode === "target") { needD = Math.max(0, Math.min(k, opts.targetD | 0)); needR = k - needD; }
       if (mode === "proportional") { needD = Math.round(k * stateShare); needR = k - needD; }
+      // Proportional maps, once the seat split is reached: keep those seats and push
+      // the efficiency gap and mean-median toward zero. fairness = |EG| + |MM|, in
+      // points. Later phases may not let it grow by more than FAIR_SLACK.
+      const isProp = mode === "proportional";
+      const FAIR_SLACK = 0.25;
+      let fairOn = false, curFair = 0, fairBest = Infinity, fairBestAssign = null, fairAchieved = false;
 
       // ----- plan state -----
       const assign = new Int32Array(n).fill(-1);
@@ -210,6 +216,17 @@
       const changed = new Int32Array(n);
 
       function share(d) { const t = dDem[d] + dRep[d]; return t > 0 ? dDem[d] / t : 0.5; }
+      function fairness() {
+        let wD = 0, wR = 0, V = 0, sum = 0;
+        for (let d = 0; d < k; d++) {
+          const t = dDem[d] + dRep[d];
+          if (dDem[d] > dRep[d]) { wD += dDem[d] - t / 2; wR += dRep[d]; } else { wR += dRep[d] - t / 2; wD += dDem[d]; }
+          V += t; sum += shares[d];
+        }
+        sortBuf.set(shares); sortBuf.sort();
+        const med = k % 2 ? sortBuf[(k - 1) / 2] : (sortBuf[k / 2 - 1] + sortBuf[k / 2]) / 2;
+        return 100 * (Math.abs(V > 0 ? (wD - wR) / V : 0) + Math.abs(med - sum / k));
+      }
       function invPP(a, p) { return a > 0 ? (p * p) / (FOUR_PI * a) : 0; }
       // Population penalty beyond the tolerance. While polishing it is soft (with a
       // wider hard limit) so single-unit flips can move; its weight ramps up.
@@ -262,11 +279,13 @@
           shares[d] = share(d); dCls[d] = cls(shares[d]); addCls(dCls[d], 1);
           if (nTier) { dTier[d] = tierBits(shares[d]); addTier(dTier[d], 1); }
         }
+        if (fairOn) curFair = fairness();
         partE = partisanE();
       }
 
       function partisanE() {
         if (mode === "neutral" || wPart === 0) return 0;
+        if (fairOn) return curFair;
         if (mode === "competitive") {
           let e = 0;
           for (let d = 0; d < k; d++) { const x = Math.abs(2 * shares[d] - 1) - 2 * band; if (x > 0) e += x; }
@@ -323,7 +342,7 @@
           return true;
         }
         if (mode === "competitive") return cntComp >= lock.comp;
-        return cntSafeD >= lock.safeD && cntSafeR >= lock.safeR;
+        return cntSafeD >= lock.safeD && cntSafeR >= lock.safeR && (lock.fair == null || curFair <= lock.fair);
       }
       function energy() { return wPart * partE + wComp * compSum + wCty * splits + penSum; }
 
@@ -616,7 +635,7 @@
       function save(A, B) {
         return [dPop[A], dDem[A], dRep[A], dArea[A], dPerim[A], dCnt[A], dPop[B], dDem[B], dRep[B], dArea[B], dPerim[B], dCnt[B],
           dInv[A], dPen[A], dCls[A], shares[A], dInv[B], dPen[B], dCls[B], shares[B], compSum, penSum, splits, partE,
-          cntSafeD, cntSafeR, cntComp, cntWinD, dTier[A], dTier[B]].concat(Array.from(cntTier));
+          cntSafeD, cntSafeR, cntComp, cntWinD, dTier[A], dTier[B], curFair].concat(Array.from(cntTier));
       }
       function restoreSaved(A, B, s) {
         dPop[A] = s[0]; dDem[A] = s[1]; dRep[A] = s[2]; dArea[A] = s[3]; dPerim[A] = s[4]; dCnt[A] = s[5];
@@ -625,12 +644,13 @@
         dInv[B] = s[16]; dPen[B] = s[17]; dCls[B] = s[18]; shares[B] = s[19];
         compSum = s[20]; penSum = s[21]; splits = s[22]; partE = s[23];
         cntSafeD = s[24]; cntSafeR = s[25]; cntComp = s[26]; cntWinD = s[27];
-        dTier[A] = s[28]; dTier[B] = s[29];
-        for (let j = 0; j < nTier; j++) cntTier[j] = s[30 + j];
+        dTier[A] = s[28]; dTier[B] = s[29]; curFair = s[30];
+        for (let j = 0; j < nTier; j++) cntTier[j] = s[31 + j];
       }
       // stats of A and B already updated; decide, and roll back if rejected
       function tryAccept(A, B, saved) {
         refresh(A); refresh(B);
+        if (fairOn) curFair = fairness();
         if (wPart > 0) partE = partisanE();
         const newE = energy();
         if (lockOk() && accept(newE - curE)) { curE = newE; return true; }
@@ -741,12 +761,12 @@
           lock = null;
           if (isMax) { tierIdx = 0; posIdx = -1; tierLock.fill(-1); posLock.fill(-Infinity); lock = { tiers: tierLock, pos: posLock }; }
         } else if (p === "polish") {
-          wPart = 0; wComp = 1; wCty = wCounty;
+          wPart = fairOn ? tune.polishFair : 0; wComp = 1; wCty = wCounty;
           T0 = tune.polishT0; T1 = tune.polishT1; phaseBudget = polishBudget; recomProb = tune.polishRecom;
-          if (!lock && mode !== "neutral") lock = currentLock();
+          if ((!lock || (fairOn && lock.fair == null)) && mode !== "neutral") lock = currentLock();
         } else if (p === "final") {
-          wPart = 0; wComp = compact ? 1 : 0; wCty = wCounty;
-          if (!lock && mode !== "neutral") lock = currentLock();
+          wPart = fairOn ? tune.polishFair : 0; wComp = compact ? 1 : 0; wCty = wCounty;
+          if ((!lock || (fairOn && lock.fair == null)) && mode !== "neutral") lock = currentLock();
           T0 = T1 = 1e-4; phaseBudget = Math.max(30000, 4 * n, 2000 * k); recomProb = 0;
         }
         recomputePen();
@@ -773,7 +793,7 @@
       // census-block stage can still balance population and smooth borders.
       const LOCK_SLACK = 0.005;
       function currentLock() {
-        if (!isMax) return { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp };
+        if (!isMax) return { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp, fair: fairOn ? curFair + FAIR_SLACK : null };
         const b = partySorted(new Float64Array(k)), pos = new Float64Array(k).fill(-Infinity);
         for (let q = 0; q < cntTier[0]; q++) pos[q] = thFloor; // safe seats: anywhere at or above the floor
         if (posOn) for (let q = cntTier[0]; q < k; q++) pos[q] = Math.min(b[q], thFloor) - LOCK_SLACK;
@@ -794,6 +814,8 @@
       }
 
       function init() {
+        // a proportional map handed down from the precinct stage keeps its fairness
+        if (isProp && opts.lockFromStart) fairOn = true;
         if (opts.initialAssign) {
           assign.set(opts.initialAssign);
           const moved = repairContiguity();
@@ -856,11 +878,16 @@
             }
             return;
           }
-          if (mode !== "competitive" && partE === 0) { finishSearch(true); return; }
+          if (fairOn) {
+            if (curFair < fairBest - 1e-9) { fairBest = curFair; fairBestAssign.set(assign); }
+            if (curFair < 0.01 || phaseStep >= phaseBudget) { restore(fairBestAssign); finishSearch(fairAchieved); }
+            return;
+          }
+          if (mode !== "competitive" && partE === 0) { if (isProp) startFair(true); else finishSearch(true); return; }
           if (!best || partE < best.E) { if (!best) best = { assign: new Int32Array(n), E: partE }; best.assign.set(assign); best.E = partE; }
           if (phaseStep >= phaseBudget) {
             restore(best.assign);
-            finishSearch(false);
+            if (isProp) startFair(false); else finishSearch(false);
           }
         } else if (phase === "polish") {
           // ramp the population penalty: loose early, strict at the end
@@ -879,6 +906,16 @@
         }
       }
 
+      // Proportional: the seats are locked; now minimize |efficiency gap| + |mean-median|
+      function startFair(achieved) {
+        fairAchieved = achieved;
+        lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp, fair: null };
+        fairOn = true; curFair = fairness(); fairBest = curFair;
+        if (!fairBestAssign) fairBestAssign = new Int32Array(n);
+        fairBestAssign.set(assign);
+        phaseStep = 0;
+        partE = partisanE(); curE = energy();
+      }
       // lock this count and move on: next count, then district-by-district
       function nextTier() {
         tierLock[tierIdx] = cntTier[tierIdx];
@@ -916,9 +953,10 @@
         else if (mode === "competitive") goal = { achieved: true, text: cntComp + " of " + k + " districts within " + (band * 200).toFixed(0) + " points" };
         else {
           const want = needD + " D / " + needR + " R" + margin;
+          const fairTxt = fairOn ? " Then the efficiency gap and mean–median were pushed as close to zero as those seats allow." : "";
           goal = achieved
-            ? { achieved: true, text: "Reached " + want }
-            : { achieved: false, text: "Couldn't reach " + want + ". Closest map found: " + cntSafeD + " D / " + cntSafeR + " R" + margin + "." };
+            ? { achieved: true, text: "Reached " + want + "." + fairTxt }
+            : { achieved: false, text: "Couldn't reach " + want + ". Closest map found: " + cntSafeD + " D / " + cntSafeR + " R" + margin + "." + fairTxt };
         }
         nextPhase();
       }
@@ -1016,6 +1054,7 @@
           return { achieved: false, text: "Locked " + cntTier[0] + " safe seats; now trying for " + need + " " + party + " wins" };
         }
         if (mode === "competitive") return { achieved: false, text: "Making districts competitive" };
+        if (fairOn) return { achieved: false, text: "Seats locked at " + cntSafeD + " D / " + cntSafeR + " R; now pushing the efficiency gap and mean–median toward zero" };
         return { achieved: false, text: "Aiming for " + needD + " D / " + needR + " R" };
       }
 
@@ -1040,7 +1079,11 @@
         finishNow() {
           if (phase === "polish") { nextPhase(); }
           else if (phase === "final") { if (best) restore(best.assign); phase = "done"; }
-          else if (phase === "search" || phase === "balance") { phaseStep = phaseBudget; targetSteps = phaseBudget; searchTotal = Infinity; stepOnce(); }
+          else if (phase === "search" || phase === "balance") {
+            phaseStep = phaseBudget; targetSteps = phaseBudget; searchTotal = Infinity; stepOnce();
+            // proportional: skipping the seat search lands in the fairness search; skip that too
+            if (phase === "search" && fairOn) { phaseStep = phaseBudget; stepOnce(); }
+          }
         },
         report,
         verifyContiguity,
@@ -1261,7 +1304,9 @@
         // gerrymanders: safe seats, then wins, then each district's margin (capped at the floor), best first
         if (r.gerry) primary = [r.gerry.safe, r.gerry.wins].concat(r.gerry.margins.slice(r.gerry.safe).map((m) => Math.min(m, r.gerry.floor)));
         else if (mode === "competitive") primary = [r.seats.comp];
-        else if (mode === "target" || mode === "proportional") primary = [-deficit(r)];
+        else if (mode === "target") primary = [-deficit(r)];
+        // proportional: seats first, then |efficiency gap| + |mean-median|
+        else if (mode === "proportional") primary = [-deficit(r), -(Math.abs(r.efficiencyGap) + Math.abs(r.meanMedian))];
         const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9), 0) : -r.maxDev;
         return valid ? [1].concat(primary, [shape]) : [0, -r.maxDev].concat(primary);
       }

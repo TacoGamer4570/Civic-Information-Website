@@ -572,7 +572,7 @@
     tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
     if (r.splitCounties != null) tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.D.meta.counties.length + " counties are split between districts"));
     const eg = r.efficiencyGap;
-    tiles.push(tile("Efficiency gap", (Math.abs(eg) < 0.0005 ? "0%" : pct(Math.abs(eg))) + (Math.abs(eg) >= 0.0005 ? (eg > 0 ? " R" : " D") : ""), "Wasted-vote advantage. Above ~7% is a red flag."));
+    tiles.push(tile("Efficiency gap", (Math.abs(eg) < 0.0005 ? "0%" : pct(Math.abs(eg))) + (Math.abs(eg) >= 0.0005 ? (eg > 0 ? " R" : " D") : ""), S.opts.mode === "proportional" ? "Wasted-vote advantage. With the seat split fixed, it can only move through turnout differences between districts." : "Wasted-vote advantage. Above ~7% is a red flag."));
     const mm = r.meanMedian;
     tiles.push(tile("Mean–median", (Math.abs(mm) < 0.0005 ? "0" : (100 * Math.abs(mm)).toFixed(1) + " pts " + (mm < 0 ? "R" : "D")), "Gap between the median and average district. Near 0 is symmetric."));
     el.tiles.innerHTML = tiles.join("");

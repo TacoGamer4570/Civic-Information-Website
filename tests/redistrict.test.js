@@ -159,6 +159,28 @@ test("two-stage pipeline (groups, then units) keeps the seat result and contigui
   assert.ok(r.maxDev <= 0.01 + 1e-9, String(r.maxDev));
 });
 
+test("proportional: after the seat split, efficiency gap and mean-median are pushed toward zero", () => {
+  // uneven leans and turnout, so the two measures have something to work with
+  const raw = grid(30, 30);
+  for (let y = 0; y < 30; y++) for (let x = 0; x < 30; x++) {
+    const u = y * 30 + x, votes = 50 + ((x * 3 + y * 5) % 7) * 8, lean = (33 + x + ((x * 7 + y * 13) % 11) - 5) / 100;
+    raw.dem[u] = votes * lean; raw.rep[u] = votes * (1 - lean);
+  }
+  const g = RE.buildGraph(raw);
+  const fair = (r) => 100 * (Math.abs(r.efficiencyGap) + Math.abs(r.meanMedian));
+  const prop = RE.createEngine(g, { k: 7, mode: "proportional", tol: 0.02, seed: 4, searchSteps: 6000, polishSteps: 8000 });
+  prop.init();
+  let atLock = null;
+  while (!prop.steps(20)) { if (atLock == null && prop.phase !== "search") atLock = fair(prop.report(false)); }
+  const r = prop.report(true);
+  const plain = run(g, { k: 7, mode: "target", targetD: r.target.needD, tol: 0.02, seed: 4, searchSteps: 6000, polishSteps: 8000 }).report(true);
+  assert.ok(r.goal.achieved, r.goal.text);
+  assert.strictEqual(r.seats.safeD, r.target.needD);
+  assert.ok(r.contiguity.ok);
+  assert.ok(fair(r) <= atLock + 0.25 + 1e-9, "compactness phase kept fairness: " + fair(r) + " vs " + atLock);
+  assert.ok(fair(r) < fair(plain), "fairer than seats alone: " + fair(r).toFixed(2) + " vs " + fair(plain).toFixed(2));
+});
+
 test("superthinking: cycles keep the best map, never get worse, and stop cleanly", () => {
   const raw = grid(30, 30);
   const e = RE.createEndless(G, raw.group, { k: 6, mode: "maxD", margin: 0, tol: 0.02, seed: 9, searchSteps: 1500, coarsePolishSteps: 1500, finePolishSteps: 1500, endless: true });
