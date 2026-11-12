@@ -203,7 +203,7 @@
   function syncMode() {
     const m = mode();
     el.targetField.hidden = m !== "target";
-    el.marginField.hidden = m === "neutral";
+    el.marginField.hidden = m === "neutral" || m === "proportional";
     if (m === "competitive") {
       el.marginLabel.textContent = "Toss-up range";
       el.marginHint.textContent = "A district counts as competitive if the 2024 margin is within this many points.";
@@ -237,7 +237,7 @@
       endless: el.superOn.checked,
       tol: +el.tol.value,
       targetD: Math.min(k, +el.target.value),
-      margin: m === "competitive" ? 0 : +el.margin.value,
+      margin: m === "competitive" || m === "proportional" ? 0 : +el.margin.value,
       band: m === "competitive" ? +el.margin.value : 5,
       countyWeight: +el.county.value,
       searchSteps: ef.search,
@@ -556,7 +556,7 @@
     const c = r.contiguity;
     const tiles = [];
     tiles.push(tile("Seats", '<span class="party-d-ink">' + fmt(dWins) + " D</span> – <span class=\"party-r-ink\">" + fmt(rWins) + " R</span>",
-      escapeHtml(goal.text || "") + (!r.gerry && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
+      escapeHtml(goal.text || "") + (!r.gerry && S.opts.margin > 0 && S.opts.mode !== "neutral" && S.opts.mode !== "competitive" && S.opts.mode !== "proportional" ? "<br>Safe (" + S.opts.margin + "+ pts): " + r.seats.safeD + " D, " + r.seats.safeR + " R" : ""), goalCls));
     if (r.gerry) tiles.push(tile("Gerrymander result", gerryBars(r), "Safe seats were maximized first, then wins under the floor; then every other district, best first, was pushed as close to the floor as it would go without giving up a seat. Safe seats could shed surplus votes to help, but never below the floor.", "rd-tile-wide"));
     tiles.push(tile("Vote vs. seats", pct(r.stateShare) + " → " + pct(dWins / k, 0), "Harris share of the two-party vote, and of seats"));
     if (c) {

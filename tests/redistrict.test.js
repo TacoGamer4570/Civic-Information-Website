@@ -170,7 +170,7 @@ function seatGap(r) {
   return g / m;
 }
 
-test("proportional: after the seat split, the seats-votes curve is pulled toward the 1-for-1 line", () => {
+test("proportional: the seats-votes curve is pulled toward the 1-for-1 line (no seat count forced)", () => {
   // uneven leans and turnout, so districts can be spread out
   const raw = grid(30, 30);
   for (let y = 0; y < 30; y++) for (let x = 0; x < 30; x++) {
@@ -186,8 +186,8 @@ test("proportional: after the seat split, the seats-votes curve is pulled toward
   const r = prop.report(true);
   const plain = run(g, Object.assign({ mode: "target", targetD: r.target.needD }, o)).report(true);
   assert.ok(r.goal.achieved, r.goal.text);
-  assert.strictEqual(r.seats.safeD, r.target.needD);
   assert.ok(r.contiguity.ok);
+  assert.ok(r.maxDev <= 0.02 + 1e-9);
   assert.ok(r.curveDev <= atLock + 0.25 + 1e-9, "compactness phase kept the curve: " + r.curveDev + " vs " + atLock);
   assert.ok(r.curveDev < plain.curveDev, "closer to the line than seats alone: " + r.curveDev.toFixed(2) + " vs " + plain.curveDev.toFixed(2));
   assert.ok(seatGap(r) <= seatGap(plain), "seats track swings at least as well: " + seatGap(r).toFixed(2) + " vs " + seatGap(plain).toFixed(2));
