@@ -346,6 +346,47 @@ function landContiguous(st, blockAssign, k) {
   return true;
 }
 
+// Independent check from the raw census data: sliver blocks (under 30 m wide on
+// average: road and rail strips) never hold a district together on the same piece
+// of solid land. They may still carry it across to other land when they are the
+// only land in between (a river crossing). Returns the number of violations.
+function noSliverLinks(st, blockAssign) {
+  const { meta, A } = loaded[st];
+  const n = meta.n, per = Float64Array.from(A.ext, Number);
+  let e = 0;
+  for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) { const v = u + A.dv[e]; per[u] += A.elen[e]; per[v] += A.elen[e]; }
+  const land = (u) => !A.water[u];
+  const solid = (u) => land(u) && per[u] > 0 && (200 * A.area[u]) / per[u] >= 30;
+  const mk = () => { const p = new Int32Array(n); for (let i = 0; i < n; i++) p[i] = i; return p; };
+  const mp = mk(), dp = mk(), sg = mk();
+  const f = (p, x) => { while (p[x] !== x) { p[x] = p[p[x]]; x = p[x]; } return x; };
+  const nb = [];
+  e = 0;
+  for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) {
+    const v = u + A.dv[e];
+    if (A.elen[e] === 0 || !land(u) || !land(v)) continue;
+    if (solid(u) && solid(v)) { mp[f(mp, u)] = f(mp, v); if (blockAssign[u] === blockAssign[v]) dp[f(dp, u)] = f(dp, v); }
+    else if (blockAssign[u] === blockAssign[v]) { if (!solid(u) && !solid(v)) sg[f(sg, u)] = f(sg, v); else nb.push(solid(u) ? [v, u] : [u, v]); }
+  }
+  // each group of same-district slivers joins solid land of that district only
+  // across different pieces of solid land
+  const touch = new Map();
+  for (const [s0, b] of nb) { const g = f(sg, s0); if (!touch.has(g)) touch.set(g, []); touch.get(g).push(b); }
+  for (const bs of touch.values()) {
+    const byMass = new Map();
+    for (const b of bs) { const m = f(mp, b); if (!byMass.has(m)) byMass.set(m, b); }
+    for (const b of bs) for (const [m, c] of byMass) if (m !== f(mp, b)) dp[f(dp, b)] = f(dp, c);
+  }
+  // pieces of a district on one piece of solid land, beyond the first
+  const first = new Map(), extra = new Set();
+  for (let u = 0; u < n; u++) {
+    if (!solid(u)) continue;
+    const key = blockAssign[u] + "|" + f(mp, u), p = f(dp, u);
+    if (!first.has(key)) first.set(key, p); else if (first.get(key) !== p) extra.add(p);
+  }
+  return extra.size;
+}
+
 test("PA: a quick real run gives districts connected over land, within ±0.1%", () => {
   const { graph } = loaded.PA;
   const g = RE.buildGraph(graph);
@@ -355,7 +396,9 @@ test("PA: a quick real run gives districts connected over land, within ±0.1%", 
   const r = p.report(true);
   assert.ok(r.contiguity.ok);
   assert.ok(r.maxDev <= 0.001 + 1e-9, String(r.maxDev));
-  assert.ok(landContiguous("PA", RE.expandAssign(graph, p.assignment()), 17), "land-only contiguity");
+  const blocks = RE.expandAssign(graph, p.assignment());
+  assert.ok(landContiguous("PA", blocks, 17), "land-only contiguity");
+  assert.strictEqual(noSliverLinks("PA", blocks), 0, "no district held together by sliver blocks");
   assert.ok(r.meanPP > 0.1 && r.meanPP < 1, "compactness in a sane range: " + r.meanPP);
 });
 
@@ -366,7 +409,9 @@ test("MI: districts connect over land; the Upper Peninsula only through its wate
   p.init();
   while (!p.run(5000));
   assert.ok(p.report(true).contiguity.ok);
-  assert.ok(landContiguous("MI", RE.expandAssign(graph, p.assignment()), 13));
+  const blocks = RE.expandAssign(graph, p.assignment());
+  assert.ok(landContiguous("MI", blocks, 13));
+  assert.strictEqual(noSliverLinks("MI", blocks), 0, "no district held together by sliver blocks");
 });
 
 console.log("\n" + passed + " passed" + (process.exitCode ? ", some FAILED" : ""));

@@ -1193,10 +1193,17 @@
     // Decoded state arrays -> engine input. Block votes are the precinct's
     // 2024 votes split by each block's weight (voting-age population).
     //
+    // Sliver blocks (road and rail strips, slivers along rivers: on average under
+    // THIN_M meters wide) are too thin to hold a district together. Each one joins
+    // the neighboring block it shares the most border with, and a border through it
+    // only counts where it is the only land between two pieces of solid land (a
+    // river crossing), never for joining two parts of a district on the same land.
+    //
     // Districts may only connect over land: water blocks (no land area) are left
     // out of the graph, and land cut off by water (islands etc.) is joined only by
     // the links in meta.landBridges. Each water block is attached to a nearby land
     // block (`attach`) so it can be shown and exported with that block's district.
+    const THIN_M = 30;
     function prepareGraph(meta, A) {
       const n = meta.n, np = meta.precincts.id.length;
       const water = A.water || new Uint8Array(n);
@@ -1213,14 +1220,42 @@
       const E = meta.nEdges, au = new Int32Array(E), av = new Int32Array(E);
       let e = 0;
       for (let u = 0; u < n; u++) for (let j = 0; j < A.deg[u]; j++, e++) { au[e] = u; av[e] = u + A.dv[e]; }
-      // land index
+      // average width of each block: 2 * area / perimeter (a long strip w wide gives ~w)
+      const per = Float64Array.from(A.ext, Number);
+      for (let i = 0; i < E; i++) { per[au[i]] += A.elen[i]; per[av[i]] += A.elen[i]; }
+      // slivers hang off a host: the solid land neighbor with the longest shared
+      // border, or, failing that, the host of a sliver neighbor (repeated)
+      const host = new Int32Array(n).fill(-1), bestLen = new Float64Array(n);
+      const thin = new Uint8Array(n);
+      for (let u = 0; u < n; u++) if (!water[u] && per[u] > 0 && (200 * A.area[u]) / per[u] < THIN_M) thin[u] = 1;
+      const cand = new Int32Array(n);
+      function offer(x, y, len) {
+        if (!thin[x] || host[x] >= 0) return;
+        const hy = thin[y] ? host[y] : y;
+        if (hy >= 0 && len > bestLen[x]) { bestLen[x] = len; cand[x] = hy; }
+      }
+      for (let pass = 0; pass < 50; pass++) {
+        let changed = 0;
+        bestLen.fill(0); cand.fill(-1);
+        for (let i = 0; i < E; i++) {
+          const a = au[i], b = av[i], len = A.elen[i];
+          if (!(len > 0) || water[a] || water[b] || (!thin[a] && !thin[b])) continue;
+          offer(a, b, len); offer(b, a, len);
+        }
+        for (let u = 0; u < n; u++) if (cand[u] >= 0) { host[u] = cand[u]; changed++; }
+        if (!changed) break;
+      }
+      // a sliver with no solid land to hang on (a tiny island of slivers) stays on its own
+      for (let u = 0; u < n; u++) if (thin[u] && host[u] < 0) thin[u] = 0;
+      // land index: solid land blocks only
       const landOf = new Int32Array(n).fill(-1);
       let nl = 0;
-      for (let u = 0; u < n; u++) if (!water[u]) landOf[u] = nl++;
+      for (let u = 0; u < n; u++) if (!water[u] && !thin[u]) landOf[u] = nl++;
       const landIds = new Int32Array(nl);
       for (let u = 0; u < n; u++) if (landOf[u] >= 0) landIds[landOf[u]] = u;
       // attach water blocks to land: breadth-first out from the shore
       const attach = Int32Array.from(landOf);
+      for (let u = 0; u < n; u++) if (thin[u]) attach[u] = landOf[host[u]];
       const deg = new Int32Array(n);
       for (let i = 0; i < E; i++) { deg[au[i]]++; deg[av[i]]++; }
       const st = new Int32Array(n + 1);
@@ -1229,7 +1264,7 @@
       for (let i = 0; i < E; i++) { adj[fill[au[i]]++] = av[i]; adj[fill[av[i]]++] = au[i]; }
       const q = new Int32Array(n);
       let qh = 0, qt = 0;
-      for (let u = 0; u < n; u++) if (landOf[u] >= 0) q[qt++] = u;
+      for (let u = 0; u < n; u++) if (attach[u] >= 0) q[qt++] = u;
       while (qh < qt) {
         const u = q[qh++];
         for (let j = st[u]; j < st[u + 1]; j++) { const w = adj[j]; if (attach[w] < 0) { attach[w] = attach[u]; q[qt++] = w; } }
@@ -1245,22 +1280,37 @@
         area[l] += A.area[u] * 100; ext[l] += A.ext[u];
         if (landOf[u] >= 0) { county[l] = A.county[u]; group[l] = A.precinct[u]; }
       }
+      // edge kinds: 1 solid land border, 3 border through a sliver (settled below),
+      // 2 link (zero-length island link), 0 water / shape only
+      const RANK = [0, 3, 1, 2];
       const pairs = new Map(), lu = [], lv = [], ll = [], lc = [];
       function addEdge(a, b, len, c) {
         if (a === b) return;
         const key = a < b ? a * nl + b : b * nl + a;
         const i = pairs.get(key);
         if (i === undefined) { pairs.set(key, lu.length); lu.push(Math.min(a, b)); lv.push(Math.max(a, b)); ll.push(len); lc.push(c); }
-        else { ll[i] += len; lc[i] = mergeConn(lc[i], c); }
+        else { ll[i] += len; if (RANK[c] > RANK[lc[i]]) lc[i] = c; }
       }
       for (let i = 0; i < E; i++) {
-        const land = landOf[au[i]] >= 0 && landOf[av[i]] >= 0;
-        addEdge(attach[au[i]], attach[av[i]], A.elen[i], land ? (A.elen[i] > 0 ? 1 : 2) : 0);
+        const a = au[i], b = av[i];
+        const land = !water[a] && !water[b];
+        addEdge(attach[a], attach[b], A.elen[i], !land ? 0 : !(A.elen[i] > 0) ? 2 : thin[a] || thin[b] ? 3 : 1);
       }
       const br = meta.landBridges || [];
       for (let i = 0; i < br.length; i += 2) {
-        const a = landOf[br[i]], b = landOf[br[i + 1]];
-        if (a >= 0 && b >= 0) addEdge(a, b, 0, 2);
+        if (water[br[i]] || water[br[i + 1]]) continue;
+        addEdge(attach[br[i]], attach[br[i + 1]], 0, 2);
+      }
+      // A border through a sliver joins two units over land only if their solid land
+      // isn't already connected (the sliver is the only land between them, e.g. across
+      // a river). Inside one piece of solid land it can't join anything: it counts for
+      // shape only, so a district can't run along a road strip.
+      {
+        const su = new Int32Array(nl);
+        for (let i = 0; i < nl; i++) su[i] = i;
+        const sf = (v) => { while (su[v] !== v) { su[v] = su[su[v]]; v = su[v]; } return v; };
+        for (let i = 0; i < lu.length; i++) if (lc[i] === 1) { const ra = sf(lu[i]), rb = sf(lv[i]); if (ra !== rb) su[ra] = rb; }
+        for (let i = 0; i < lu.length; i++) if (lc[i] === 3) lc[i] = sf(lu[i]) !== sf(lv[i]) ? 1 : 0;
       }
       // Precinct-stage units: each precinct's land-connected pieces (a precinct
       // split by a river becomes two units), so precinct maps stay contiguous on land.
@@ -1278,7 +1328,7 @@
       return {
         n: nl, pop, dem, rep, area, ext, county, group: piece, precinct: group, mass: landMass,
         eu: Int32Array.from(lu), ev: Int32Array.from(lv), elen: Float64Array.from(ll), econn: Uint8Array.from(lc),
-        landIds, landOf, attach, blocks: n,
+        landIds, landOf, attach, blocks: n, thin: thin.reduce((x, y) => x + y, 0),
       };
     }
 
