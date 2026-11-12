@@ -178,6 +178,17 @@
 .rd-sw-d { background: var(--bar-d); }
 .rd-sw-r { background: var(--bar-r); }
 .rd-sw-line { width: 18px; height: 0; border-top: 2px dashed var(--ink); border-radius: 0; }
+.rd-sw-target { width: 18px; height: 0; border-top: 2px dotted var(--muted); border-radius: 0; }
+.rd-sw-sv { width: 18px; height: 0; border-top: 2px solid var(--ink); border-radius: 0; }
+.rd-sw-ideal { width: 18px; height: 0; border-top: 2px dashed var(--muted); border-radius: 0; }
+.rd-sw-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ink); }
+.rd-target-line { fill: none; stroke: var(--muted); stroke-width: 2; stroke-dasharray: 2 3; stroke-linecap: round; }
+.rd-sv-wrap { position: relative; }
+.rd-sv-line { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; }
+.rd-sv-ideal { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.rd-sv-dot { fill: var(--ink); stroke: var(--paper); stroke-width: 2; }
+.rd-sv-cross { stroke: var(--chart-base); stroke-width: 1; }
+.rd-sv-hit { fill: transparent; cursor: crosshair; }
 
 .rd-tablehead { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .rd-tablehead h3 { margin: 0; }

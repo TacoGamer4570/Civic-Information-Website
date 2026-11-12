@@ -47,7 +47,7 @@
     run: $("rd-run"), pause: $("rd-pause"), skip: $("rd-skip"),
     canvas: $("rd-map"), tip: $("rd-tip"), loading: $("rd-loading"), legend: $("rd-legend"),
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
-    results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
+    results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), sv: $("rd-sv"), svTip: $("rd-sv-tip"), legendTarget: $("rd-legend-target"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
     csv: $("rd-csv"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
     apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
@@ -357,6 +357,7 @@
     else if (m === "maxR") s = r.seats.safeR + " Republican seats" + (mg ? " (won by " + mg + "+)" : "");
     else if (m === "competitive") s = r.seats.comp + " competitive seats";
     else s = r.seats.winD + " D – " + (k - r.seats.winD) + " R";
+    if (m === "proportional") s += ", " + curveGap(r).toFixed(1) + " seats off the 1-for-1 line";
     if (S.opts.compact) s += ", compactness " + r.meanPP.toFixed(3);
     return s + " (cycle " + b.cycle + ")";
   }
@@ -572,12 +573,16 @@
     tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
     if (r.splitCounties != null) tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.D.meta.counties.length + " counties are split between districts"));
     const eg = r.efficiencyGap;
-    tiles.push(tile("Efficiency gap", (Math.abs(eg) < 0.0005 ? "0%" : pct(Math.abs(eg))) + (Math.abs(eg) >= 0.0005 ? (eg > 0 ? " R" : " D") : ""), S.opts.mode === "proportional" ? "Wasted-vote advantage. With the seat split fixed, it can only move through turnout differences between districts." : "Wasted-vote advantage. Above ~7% is a red flag."));
+    tiles.push(tile("Efficiency gap", (Math.abs(eg) < 0.0005 ? "0%" : pct(Math.abs(eg))) + (Math.abs(eg) >= 0.0005 ? (eg > 0 ? " R" : " D") : ""), "Wasted-vote advantage. Above ~7% is a red flag."));
     const mm = r.meanMedian;
+    const cg = curveGap(r);
+    tiles.push(tile("Seats–votes curve", cg.toFixed(1) + " seats off",
+      "Average gap from the 1-for-1 line (each point of vote = one point of seats) over uniform swings of up to 10 points either way.", S.opts.mode === "proportional" && cg < 0.5 ? "is-good" : ""));
     tiles.push(tile("Mean–median", (Math.abs(mm) < 0.0005 ? "0" : (100 * Math.abs(mm)).toFixed(1) + " pts " + (mm < 0 ? "R" : "D")), "Gap between the median and average district. Near 0 is symmetric."));
     el.tiles.innerHTML = tiles.join("");
 
     renderChart(r);
+    renderSV(r);
     renderTable(r);
     el.notes.innerHTML = (r.notes || []).map(escapeHtml).join(" ");
   }
@@ -598,7 +603,10 @@
     const k = ds.length;
     const W = Math.max(280, Math.round(el.chart.clientWidth || 720)), H = W < 520 ? 200 : 240, padL = 40, padR = 10, padT = 10, padB = 24;
     const iw = W - padL - padR, ih = H - padT - padB;
-    const lo = Math.max(0, Math.min(0.2, Math.floor(ds[0].share * 10) / 10)), hi = Math.min(1, Math.max(0.8, Math.ceil(ds[k - 1].share * 10) / 10));
+    // proportional maps: the evenly spaced spots that give a 1-for-1 seats-votes curve
+    const targets = S.opts.mode === "proportional" ? ds.map((d, i) => Math.min(1, Math.max(0, r.stateShare - 0.5 + (i + 0.5) / k))) : null;
+    const tMin = targets ? targets[0] : 1, tMax = targets ? targets[k - 1] : 0;
+    const lo = Math.max(0, Math.min(0.2, Math.floor(Math.min(ds[0].share, tMin) * 10) / 10)), hi = Math.min(1, Math.max(0.8, Math.ceil(Math.max(ds[k - 1].share, tMax) * 10) / 10));
     const y = (v) => padT + ih - ((v - lo) / (hi - lo)) * ih;
     const slot = iw / k, gap = slot > 4 ? 2 : 0, bw = Math.max(0.5, slot - gap);
     let s = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Harris share of the two-party vote in each district, sorted">';
@@ -621,6 +629,8 @@
           "<title>District " + (d.id + 1) + ": Harris " + pct(d.share) + " (" + marginText(m) + ")</title></g>";
       } else s += bar;
     });
+    if (targets) s += '<polyline class="rd-target-line" points="' + targets.map((t, i) => (padL + (i + 0.5) * slot).toFixed(1) + "," + y(t).toFixed(1)).join(" ") + '"/>';
+    el.legendTarget.hidden = !targets;
     const ys = y(r.stateShare).toFixed(1);
     s += '<line class="rd-state-line" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + ys + '" y2="' + ys + '"/>';
     s += '<text class="rd-axis" x="' + padL + '" y="' + (H - 6) + '">weakest D district</text><text class="rd-axis" x="' + (W - padR) + '" y="' + (H - 6) + '" text-anchor="end">strongest D district</text>';
@@ -631,6 +641,69 @@
       g.addEventListener("mouseenter", () => { const di = +g.dataset.d; S.map.highlightDistrict = di; S.map.draw(); highlightRow(di); });
       g.addEventListener("mouseleave", () => { S.map.highlightDistrict = -1; S.map.draw(); highlightRow(-1); });
     }
+  }
+
+  // ---------- seats-votes curve (uniform swing) ----------
+  // Every district's Harris share moves by the same x; the statewide share moves by x too.
+  function seatsAt(sh, x) { let n = 0; for (let i = 0; i < sh.length; i++) if (sh[i] + x > 0.5) n++; return n; }
+  // average seats away from the 1-for-1 line over swings of -10..+10 points
+  function curveGap(r) {
+    const sh = r.districts.map((d) => d.share), k = r.k, V = r.stateShare;
+    let g = 0, m = 0;
+    for (let i = -100; i <= 100; i++) { const x = i / 1000; g += Math.abs(seatsAt(sh, x) - Math.round(k * Math.min(1, Math.max(0, V + x)))); m++; }
+    return g / m;
+  }
+  function renderSV(r) {
+    const sh = r.districts.map((d) => d.share), k = r.k, V = r.stateShare;
+    const W = Math.max(280, Math.round(el.sv.clientWidth || 720)), H = W < 520 ? 220 : 260, padL = 40, padR = 12, padT = 10, padB = 28;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const x0 = Math.max(0, V - 0.25), x1 = Math.min(1, V + 0.25);
+    const X = (v) => padL + ((v - x0) / (x1 - x0)) * iw, Y = (n) => padT + ih - (n / k) * ih;
+    let s = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Democratic seats under a uniform swing, against a 1-for-1 line">';
+    const step = [1, 2, 5, 10, 20, 25, 50, 100].find((t) => k / t <= 6) || 100;
+    for (let n = 0; n <= k; n += step) {
+      const yy = Y(n).toFixed(1);
+      s += '<line class="rd-grid" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy + '"/><text class="rd-axis" x="' + (padL - 6) + '" y="' + yy + '" text-anchor="end" dominant-baseline="middle">' + n + "</text>";
+    }
+    const tick = W < 520 ? 0.1 : 0.05;
+    for (let v = Math.ceil(x0 / tick - 1e-9) * tick; v <= x1 + 1e-9; v += tick) {
+      const xx = X(v).toFixed(1);
+      s += '<line class="rd-grid' + (Math.abs(v - 0.5) < 1e-9 ? " rd-grid-50" : "") + '" x1="' + xx + '" x2="' + xx + '" y1="' + padT + '" y2="' + (padT + ih) + '"/><text class="rd-axis" x="' + xx + '" y="' + (H - 8) + '" text-anchor="middle">' + Math.round(v * 100) + "%</text>";
+    }
+    s += '<line class="rd-sv-ideal" x1="' + X(x0).toFixed(1) + '" y1="' + Y(k * x0).toFixed(1) + '" x2="' + X(x1).toFixed(1) + '" y2="' + Y(k * x1).toFixed(1) + '"/>';
+    // step line: district d flips to Harris once the statewide share passes V + 0.5 - share
+    const flips = sh.map((x) => V + 0.5 - x).filter((f) => f > x0 && f < x1).sort((a, b) => a - b);
+    let n = seatsAt(sh, x0 - V), pts = X(x0).toFixed(1) + "," + Y(n).toFixed(1);
+    for (const f of flips) { const xx = X(f).toFixed(1); pts += " " + xx + "," + Y(n).toFixed(1); n++; pts += " " + xx + "," + Y(n).toFixed(1); }
+    pts += " " + X(x1).toFixed(1) + "," + Y(n).toFixed(1);
+    s += '<polyline class="rd-sv-line" points="' + pts + '"/>';
+    s += '<line class="rd-sv-cross" id="rd-sv-cross" x1="0" x2="0" y1="' + padT + '" y2="' + (padT + ih) + '" visibility="hidden"/>';
+    s += '<circle class="rd-sv-dot" cx="' + X(V).toFixed(1) + '" cy="' + Y(r.seats.winD).toFixed(1) + '" r="5"/>';
+    s += '<rect class="rd-sv-hit" x="' + padL + '" y="' + padT + '" width="' + iw + '" height="' + ih + '"/>';
+    s += "</svg>";
+    el.sv.innerHTML = s;
+    S.svWidth = W;
+    const svg = el.sv.firstChild, cross = svg.querySelector("#rd-sv-cross"), hit = svg.querySelector(".rd-sv-hit"), tip = el.svTip;
+    function move(e) {
+      const b = svg.getBoundingClientRect(), sc = b.width / W;
+      const px = (e.clientX - b.left) / sc;
+      const v = Math.min(x1, Math.max(x0, x0 + ((px - padL) / iw) * (x1 - x0))), x = v - V;
+      cross.setAttribute("x1", X(v).toFixed(1)); cross.setAttribute("x2", X(v).toFixed(1)); cross.setAttribute("visibility", "visible");
+      const seats = seatsAt(sh, x), sw = 100 * x;
+      tip.innerHTML = '<div class="rd-tip-h">Harris ' + pct(v) + " statewide</div>" +
+        '<div class="mono small muted">' + (Math.abs(sw) < 0.05 ? "2024 result" : "Swing of " + Math.abs(sw).toFixed(1) + " pts toward " + (sw > 0 ? "Harris" : "Trump")) + "</div>" +
+        '<div class="mono small">This map: ' + seats + " D, " + (k - seats) + " R</div>" +
+        '<div class="mono small">1-for-1 line: ' + (k * v).toFixed(1) + " D</div>";
+      tip.hidden = false;
+      const wrap = tip.parentElement.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+      let left = e.clientX - wrap.left + 14, top = e.clientY - wrap.top - th - 10;
+      if (left + tw > wrap.width - 4) left = Math.max(4, e.clientX - wrap.left - tw - 14);
+      if (top < 0) top = e.clientY - wrap.top + 14;
+      tip.style.left = left + "px"; tip.style.top = top + "px";
+    }
+    hit.addEventListener("pointermove", move);
+    hit.addEventListener("pointerdown", move);
+    hit.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
   }
 
   function renderTable(r) {
@@ -711,7 +784,7 @@
     d.addEventListener("click", (e) => { if (e.target === d || e.target.closest("[data-close]")) d.close(); });
   });
   window.addEventListener("resize", () => {
-    if (S.report && !el.results.hidden && Math.abs((el.chart.clientWidth || 0) - (S.chartWidth || 0)) > 20) renderChart(S.report);
+    if (S.report && !el.results.hidden && Math.abs((el.chart.clientWidth || 0) - (S.chartWidth || 0)) > 20) { renderChart(S.report); renderSV(S.report); }
   });
   if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderLegend(); renderPlan(); });
 

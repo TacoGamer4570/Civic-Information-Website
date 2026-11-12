@@ -159,26 +159,38 @@ test("two-stage pipeline (groups, then units) keeps the seat result and contigui
   assert.ok(r.maxDev <= 0.01 + 1e-9, String(r.maxDev));
 });
 
-test("proportional: after the seat split, efficiency gap and mean-median are pushed toward zero", () => {
-  // uneven leans and turnout, so the two measures have something to work with
+// seats away from a 1-for-1 seats-votes line, averaged over uniform swings of -10..+10 points
+function seatGap(r) {
+  const sh = r.districts.map((d) => d.share);
+  let g = 0, m = 0;
+  for (let i = -100; i <= 100; i++) {
+    const x = i / 1000, seats = sh.filter((s) => s + x > 0.5).length;
+    g += Math.abs(seats - Math.round(r.k * (r.stateShare + x))); m++;
+  }
+  return g / m;
+}
+
+test("proportional: after the seat split, the seats-votes curve is pulled toward the 1-for-1 line", () => {
+  // uneven leans and turnout, so districts can be spread out
   const raw = grid(30, 30);
   for (let y = 0; y < 30; y++) for (let x = 0; x < 30; x++) {
     const u = y * 30 + x, votes = 50 + ((x * 3 + y * 5) % 7) * 8, lean = (33 + x + ((x * 7 + y * 13) % 11) - 5) / 100;
     raw.dem[u] = votes * lean; raw.rep[u] = votes * (1 - lean);
   }
   const g = RE.buildGraph(raw);
-  const fair = (r) => 100 * (Math.abs(r.efficiencyGap) + Math.abs(r.meanMedian));
-  const prop = RE.createEngine(g, { k: 7, mode: "proportional", tol: 0.02, seed: 4, searchSteps: 6000, polishSteps: 8000 });
+  const o = { k: 7, tol: 0.02, seed: 4, searchSteps: 6000, polishSteps: 8000 };
+  const prop = RE.createEngine(g, Object.assign({ mode: "proportional" }, o));
   prop.init();
   let atLock = null;
-  while (!prop.steps(20)) { if (atLock == null && prop.phase !== "search") atLock = fair(prop.report(false)); }
+  while (!prop.steps(20)) { if (atLock == null && prop.phase !== "search") atLock = prop.report(false).curveDev; }
   const r = prop.report(true);
-  const plain = run(g, { k: 7, mode: "target", targetD: r.target.needD, tol: 0.02, seed: 4, searchSteps: 6000, polishSteps: 8000 }).report(true);
+  const plain = run(g, Object.assign({ mode: "target", targetD: r.target.needD }, o)).report(true);
   assert.ok(r.goal.achieved, r.goal.text);
   assert.strictEqual(r.seats.safeD, r.target.needD);
   assert.ok(r.contiguity.ok);
-  assert.ok(fair(r) <= atLock + 0.25 + 1e-9, "compactness phase kept fairness: " + fair(r) + " vs " + atLock);
-  assert.ok(fair(r) < fair(plain), "fairer than seats alone: " + fair(r).toFixed(2) + " vs " + fair(plain).toFixed(2));
+  assert.ok(r.curveDev <= atLock + 0.25 + 1e-9, "compactness phase kept the curve: " + r.curveDev + " vs " + atLock);
+  assert.ok(r.curveDev < plain.curveDev, "closer to the line than seats alone: " + r.curveDev.toFixed(2) + " vs " + plain.curveDev.toFixed(2));
+  assert.ok(seatGap(r) <= seatGap(plain), "seats track swings at least as well: " + seatGap(r).toFixed(2) + " vs " + seatGap(plain).toFixed(2));
 });
 
 test("superthinking: cycles keep the best map, never get worse, and stop cleanly", () => {

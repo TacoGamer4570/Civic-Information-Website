@@ -159,9 +159,14 @@
       let needD = 0, needR = 0;
       if (mode === "target") { needD = Math.max(0, Math.min(k, opts.targetD | 0)); needR = k - needD; }
       if (mode === "proportional") { needD = Math.round(k * stateShare); needR = k - needD; }
-      // Proportional maps, once the seat split is reached: keep those seats and push
-      // the efficiency gap and mean-median toward zero. fairness = |EG| + |MM|, in
-      // points. Later phases may not let it grow by more than FAIR_SLACK.
+      // Proportional maps, once the seat split is reached: keep those seats and bend
+      // the seats-votes curve toward the 1-for-1 line, so under a uniform swing each
+      // extra point of vote share gives a party about one more point of seats. That
+      // needs the sorted district shares spread evenly, 1/k apart, centered on the
+      // statewide share: district i (weakest D first) should sit at
+      //   stateShare - 1/2 + (i + 1/2) / k.
+      // fairness = average (weighted) distance from those spots, in points. Later phases may
+      // not let it grow by more than FAIR_SLACK.
       const isProp = mode === "proportional";
       const FAIR_SLACK = 0.25;
       let fairOn = false, curFair = 0, fairBest = Infinity, fairBestAssign = null, fairAchieved = false;
@@ -216,16 +221,20 @@
       const changed = new Int32Array(n);
 
       function share(d) { const t = dDem[d] + dRep[d]; return t > 0 ? dDem[d] / t : 0.5; }
+      // Distance is measured in swing, weighted: swings within 10 points count fully,
+      // 10-25 points half, beyond that a fifth (small swings are the likely ones, and
+      // the far ends of the line ask for districts most states can't draw).
+      function swingW(x) {
+        const a = Math.abs(x), w = a <= 0.1 ? a : a <= 0.25 ? 0.1 + 0.5 * (a - 0.1) : 0.175 + 0.2 * (a - 0.25);
+        return x < 0 ? -w : w;
+      }
+      const curveTarget = new Float64Array(k);
+      for (let i = 0; i < k; i++) curveTarget[i] = swingW(Math.min(1, Math.max(0, stateShare - 0.5 + (i + 0.5) / k)) - 0.5);
       function fairness() {
-        let wD = 0, wR = 0, V = 0, sum = 0;
-        for (let d = 0; d < k; d++) {
-          const t = dDem[d] + dRep[d];
-          if (dDem[d] > dRep[d]) { wD += dDem[d] - t / 2; wR += dRep[d]; } else { wR += dRep[d] - t / 2; wD += dDem[d]; }
-          V += t; sum += shares[d];
-        }
         sortBuf.set(shares); sortBuf.sort();
-        const med = k % 2 ? sortBuf[(k - 1) / 2] : (sortBuf[k / 2 - 1] + sortBuf[k / 2]) / 2;
-        return 100 * (Math.abs(V > 0 ? (wD - wR) / V : 0) + Math.abs(med - sum / k));
+        let e = 0;
+        for (let i = 0; i < k; i++) e += Math.abs(swingW(sortBuf[i] - 0.5) - curveTarget[i]);
+        return 100 * e / k;
       }
       function invPP(a, p) { return a > 0 ? (p * p) / (FOUR_PI * a) : 0; }
       // Population penalty beyond the tolerance. While polishing it is soft (with a
@@ -906,14 +915,15 @@
         }
       }
 
-      // Proportional: the seats are locked; now minimize |efficiency gap| + |mean-median|
+      // Proportional: the seats are locked; now pull the seats-votes curve toward the 1-for-1 line
       function startFair(achieved) {
         fairAchieved = achieved;
         lock = { safeD: cntSafeD, safeR: cntSafeR, comp: cntComp, fair: null };
         fairOn = true; curFair = fairness(); fairBest = curFair;
         if (!fairBestAssign) fairBestAssign = new Int32Array(n);
         fairBestAssign.set(assign);
-        phaseStep = 0;
+        // every district has a spot to reach, so give it more steps with more districts
+        phaseStep = 0; phaseBudget = Math.max(searchBudget, Math.round(searchBudget * k / 10));
         partE = partisanE(); curE = energy();
       }
       // lock this count and move on: next count, then district-by-district
@@ -953,7 +963,7 @@
         else if (mode === "competitive") goal = { achieved: true, text: cntComp + " of " + k + " districts within " + (band * 200).toFixed(0) + " points" };
         else {
           const want = needD + " D / " + needR + " R" + margin;
-          const fairTxt = fairOn ? " Then the efficiency gap and mean–median were pushed as close to zero as those seats allow." : "";
+          const fairTxt = fairOn ? " Then the seats–votes curve was pulled as close to the 1-for-1 line as those seats allow." : "";
           goal = achieved
             ? { achieved: true, text: "Reached " + want + "." + fairTxt }
             : { achieved: false, text: "Couldn't reach " + want + ". Closest map found: " + cntSafeD + " D / " + cntSafeR + " R" + margin + "." + fairTxt };
@@ -1036,6 +1046,7 @@
           gerry: isMax ? { floor: floorPts, safe: cntTier[0], wins: cntTier[nTier - 1], margins: partyMargins() } : null,
           efficiencyGap: (wastedD - wastedR) / votes, // >0 means Dem votes are wasted more (map favors R)
           meanMedian: median - mean,                  // <0 means map favors R
+          curveDev: fairness(),                       // avg distance (points) from the 1-for-1 seats-votes spots
           splitCounties: countyOn ? splitCounties : null, countySplits: splits,
           contiguity: full ? verifyContiguity() : null,
           goal: phase === "search" || phase === "balance" || phase === "init" ? progressGoal() : goal,
@@ -1054,7 +1065,7 @@
           return { achieved: false, text: "Locked " + cntTier[0] + " safe seats; now trying for " + need + " " + party + " wins" };
         }
         if (mode === "competitive") return { achieved: false, text: "Making districts competitive" };
-        if (fairOn) return { achieved: false, text: "Seats locked at " + cntSafeD + " D / " + cntSafeR + " R; now pushing the efficiency gap and mean–median toward zero" };
+        if (fairOn) return { achieved: false, text: "Seats locked at " + cntSafeD + " D / " + cntSafeR + " R; now pulling the seats–votes curve toward the 1-for-1 line" };
         return { achieved: false, text: "Aiming for " + needD + " D / " + needR + " R" };
       }
 
@@ -1081,7 +1092,7 @@
           else if (phase === "final") { if (best) restore(best.assign); phase = "done"; }
           else if (phase === "search" || phase === "balance") {
             phaseStep = phaseBudget; targetSteps = phaseBudget; searchTotal = Infinity; stepOnce();
-            // proportional: skipping the seat search lands in the fairness search; skip that too
+            // proportional: skipping the seat search lands in the curve search; skip that too
             if (phase === "search" && fairOn) { phaseStep = phaseBudget; stepOnce(); }
           }
         },
@@ -1305,8 +1316,8 @@
         if (r.gerry) primary = [r.gerry.safe, r.gerry.wins].concat(r.gerry.margins.slice(r.gerry.safe).map((m) => Math.min(m, r.gerry.floor)));
         else if (mode === "competitive") primary = [r.seats.comp];
         else if (mode === "target") primary = [-deficit(r)];
-        // proportional: seats first, then |efficiency gap| + |mean-median|
-        else if (mode === "proportional") primary = [-deficit(r), -(Math.abs(r.efficiencyGap) + Math.abs(r.meanMedian))];
+        // proportional: seats first, then closeness to the 1-for-1 seats-votes line
+        else if (mode === "proportional") primary = [-deficit(r), -r.curveDev];
         const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9), 0) : -r.maxDev;
         return valid ? [1].concat(primary, [shape]) : [0, -r.maxDev].concat(primary);
       }
