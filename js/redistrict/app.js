@@ -42,7 +42,7 @@
   const $ = (id) => document.getElementById(id);
   const el = {
     form: $("rd-form"), statline: $("rd-statline"), k: $("rd-k"), kReset: $("rd-k-reset"), kHint: $("rd-k-hint"),
-    targetField: $("rd-target-field"), target: $("rd-target"), targetOut: $("rd-target-out"), targetOf: $("rd-target-of"),
+    curveField: $("rd-curve-field"), targetField: $("rd-target-field"), target: $("rd-target"), targetOut: $("rd-target-out"), targetOf: $("rd-target-of"),
     marginField: $("rd-margin-field"), margin: $("rd-margin"), marginOut: $("rd-margin-out"), marginLabel: $("rd-margin-label"), marginHint: $("rd-margin-hint"),
     tol: $("rd-tol"), county: $("rd-county"), effort: $("rd-effort"), seed: $("rd-seed"), seedClear: $("rd-seed-clear"),
     run: $("rd-run"), pause: $("rd-pause"), skip: $("rd-skip"),
@@ -204,6 +204,7 @@
   function syncMode() {
     const m = mode();
     el.targetField.hidden = m !== "target";
+    el.curveField.hidden = m !== "proportional";
     el.marginField.hidden = m === "neutral" || m === "proportional";
     if (m === "competitive") {
       el.marginLabel.textContent = "Toss-up range";
@@ -233,7 +234,7 @@
     S.seedUsed = seed;
     const m = mode();
     return {
-      k, mode: m, seed, effort: el.effort.value,
+      k, mode: m, seed, effort: el.effort.value, curve: el.form.elements.curve.value,
       compact: el.form.elements.compact.value !== "0",
       endless: el.superOn.checked,
       tol: +el.tol.value,
@@ -578,7 +579,7 @@
     const mm = r.meanMedian;
     const cg = curveGap(r);
     tiles.push(tile("Seats–votes curve", cg.toFixed(1) + " seats off",
-      "Average gap from the 1-for-1 line (each point of vote = one point of seats) over uniform swings of up to 10 points either way.", S.opts.mode === "proportional" && cg < 0.5 ? "is-good" : ""));
+      wholeCurve() ? "Average gap from the 1-for-1 line (each point of vote = one point of seats) over every statewide vote share from 0% to 100%." : "Average gap from the 1-for-1 line (each point of vote = one point of seats) over uniform swings of up to 10 points either way.", S.opts.mode === "proportional" && cg < 0.5 ? "is-good" : ""));
     tiles.push(tile("Mean–median", (Math.abs(mm) < 0.0005 ? "0" : (100 * Math.abs(mm)).toFixed(1) + " pts " + (mm < 0 ? "R" : "D")), "Gap between the median and average district. Near 0 is symmetric."));
     el.tiles.innerHTML = tiles.join("");
 
@@ -647,18 +648,24 @@
   // ---------- seats-votes curve (uniform swing) ----------
   // Every district's Harris share moves by the same x; the statewide share moves by x too.
   function seatsAt(sh, x) { let n = 0; for (let i = 0; i < sh.length; i++) if (sh[i] + x > 0.5) n++; return n; }
-  // average seats away from the 1-for-1 line over swings of -10..+10 points
+  // average seats away from the 1-for-1 line: over swings of -10..+10 points, or,
+  // for the whole-line option, over every statewide vote share from 0% to 100%
+  function wholeCurve() { return S.opts && S.opts.mode === "proportional" && S.opts.curve === "whole"; }
   function curveGap(r) {
     const sh = r.districts.map((d) => d.share), k = r.k, V = r.stateShare;
     let g = 0, m = 0;
-    for (let i = -100; i <= 100; i++) { const x = i / 1000; g += Math.abs(seatsAt(sh, x) - Math.round(k * Math.min(1, Math.max(0, V + x)))); m++; }
+    if (wholeCurve()) {
+      for (let i = 0; i <= 1000; i++) { const v = i / 1000; g += Math.abs(seatsAt(sh, v - V) - Math.round(k * v)); m++; }
+    } else {
+      for (let i = -100; i <= 100; i++) { const x = i / 1000; g += Math.abs(seatsAt(sh, x) - Math.round(k * Math.min(1, Math.max(0, V + x)))); m++; }
+    }
     return g / m;
   }
   function renderSV(r) {
     const sh = r.districts.map((d) => d.share), k = r.k, V = r.stateShare;
     const W = Math.max(280, Math.round(el.sv.clientWidth || 720)), H = W < 520 ? 220 : 260, padL = 40, padR = 12, padT = 10, padB = 28;
     const iw = W - padL - padR, ih = H - padT - padB;
-    const x0 = Math.max(0, V - 0.25), x1 = Math.min(1, V + 0.25);
+    const x0 = wholeCurve() ? 0 : Math.max(0, V - 0.25), x1 = wholeCurve() ? 1 : Math.min(1, V + 0.25);
     const X = (v) => padL + ((v - x0) / (x1 - x0)) * iw, Y = (n) => padT + ih - (n / k) * ih;
     let s = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Democratic seats under a uniform swing, against a 1-for-1 line">';
     const step = [1, 2, 5, 10, 20, 25, 50, 100].find((t) => k / t <= 6) || 100;
@@ -753,6 +760,7 @@
     const round = (x, d) => Math.round(x * Math.pow(10, d)) / Math.pow(10, d);
     const settings = { districts: k, goal: m, goalName: GOAL_NAMES[m] || m };
     if (m === "target") settings.targetDemocraticSeats = o.targetD;
+    if (m === "proportional") settings.seatsVotesLine = o.curve === "whole" ? "whole line equally" : "weighted around the 2024 vote";
     if (m === "maxD" || m === "maxR") settings.safeSeatFloorPoints = o.margin;
     else if (m === "target") settings.safeSeatMarginPoints = o.margin;
     if (m === "competitive") settings.tossUpRangePoints = o.band;

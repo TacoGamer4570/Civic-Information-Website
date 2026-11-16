@@ -193,6 +193,21 @@ test("proportional: the seats-votes curve is pulled toward the 1-for-1 line (no 
   assert.ok(seatGap(r) <= seatGap(plain), "seats track swings at least as well: " + seatGap(r).toFixed(2) + " vs " + seatGap(plain).toFixed(2));
 });
 
+test("proportional, whole-line option: valid map, scored over every vote share", () => {
+  const raw = grid(30, 30);
+  for (let y = 0; y < 30; y++) for (let x = 0; x < 30; x++) {
+    const u = y * 30 + x, votes = 50 + ((x * 3 + y * 5) % 7) * 8, lean = (15 + 2 * x + ((x * 7 + y * 13) % 11) - 5) / 100;
+    raw.dem[u] = votes * lean; raw.rep[u] = votes * (1 - lean);
+  }
+  const g = RE.buildGraph(raw);
+  const o = { k: 7, mode: "proportional", tol: 0.02, seed: 2, searchSteps: 4000, polishSteps: 6000 };
+  const whole = run(g, Object.assign({ curve: "whole" }, o)).report(true);
+  const weighted = run(g, Object.assign({ curve: "weighted" }, o)).report(true);
+  assert.ok(whole.contiguity.ok && whole.maxDev <= 0.02 + 1e-9);
+  // the whole-line score also counts the far ends, which no district reaches here, so it's larger
+  assert.ok(Number.isFinite(whole.curveDev) && whole.curveDev > weighted.curveDev, whole.curveDev + " vs " + weighted.curveDev);
+});
+
 test("superthinking: cycles keep the best map, never get worse, and stop cleanly", () => {
   const raw = grid(30, 30);
   const e = RE.createEndless(G, raw.group, { k: 6, mode: "maxD", margin: 0, tol: 0.02, seed: 9, searchSteps: 1500, coarsePolishSteps: 1500, finePolishSteps: 1500, endless: true });

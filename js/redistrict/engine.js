@@ -221,10 +221,15 @@
       const changed = new Int32Array(n);
 
       function share(d) { const t = dDem[d] + dRep[d]; return t > 0 ? dDem[d] / t : 0.5; }
-      // Distance is measured in swing, weighted: swings within 10 points count fully,
-      // 10-25 points half, beyond that a fifth (small swings are the likely ones, and
-      // the far ends of the line ask for districts most states can't draw).
+      // Two ways to score the curve (opts.curve):
+      //  "weighted" (default): centered on the 2024 vote; swings within 10 points
+      //    count fully, 10-25 points half (beyond that, only the small spot term, at
+      //    a fifth). Small swings are the likely ones, and the far ends of the line
+      //    ask for districts most states can't draw.
+      //  "whole": every vote share from 0% to 100% counts the same.
+      const wholeLine = opts.curve === "whole";
       function swingW(x) {
+        if (wholeLine) return x;
         const a = Math.abs(x), w = a <= 0.1 ? a : a <= 0.25 ? 0.1 + 0.5 * (a - 0.1) : 0.175 + 0.2 * (a - 0.25);
         return x < 0 ? -w : w;
       }
@@ -232,10 +237,11 @@
       for (let i = 0; i < k; i++) curveTarget[i] = swingW(Math.min(1, Math.max(0, stateShare - 0.5 + (i + 0.5) / k)) - 0.5);
       // The score is mostly the gap you see on the seats-votes chart: the area between
       // the map's seat curve (uniform swing) and the 1-for-1 line, over swings of up
-      // to 25 points (within 10 points counts double), as an average share of seats,
-      // in points. A small part is the distance of each district from its spot, which
-      // also steers districts whose flip point is outside that range.
-      const XW = 0.25, XIN = 0.1;
+      // to 25 points (within 10 points counts double), or over the whole line, as an
+      // average share of seats, in points. A small part is the distance of each
+      // district from its spot, which also steers districts whose flip point is
+      // outside that range.
+      const XW = wholeLine ? 1 : 0.25, XIN = wholeLine ? 1 : 0.1;
       const xLo = Math.max(-XW, -stateShare), xHi = Math.min(XW, 1 - stateShare);
       const wOf = (a, b) => { // integral of the swing weight over [a, b]
         const inA = Math.max(a, -XIN), inB = Math.min(b, XIN);
