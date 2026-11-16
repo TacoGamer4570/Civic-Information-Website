@@ -48,7 +48,7 @@
     canvas: $("rd-map"), tip: $("rd-tip"), loading: $("rd-loading"), legend: $("rd-legend"),
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
     results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), sv: $("rd-sv"), svTip: $("rd-sv-tip"), legendTarget: $("rd-legend-target"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
-    csv: $("rd-csv"), png: $("rd-png"),
+    csv: $("rd-csv"), json: $("rd-json"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
     apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
   };
@@ -232,7 +232,7 @@
     S.seedUsed = seed;
     const m = mode();
     return {
-      k, mode: m, seed,
+      k, mode: m, seed, effort: el.effort.value,
       compact: el.form.elements.compact.value !== "0",
       endless: el.superOn.checked,
       tol: +el.tol.value,
@@ -743,6 +743,62 @@
     parts.push(chunk);
     download(S.st.toLowerCase() + "-block-assignments-seed" + S.seedUsed + ".csv", new Blob(parts, { type: "text/csv" }));
   }
+  // The whole map as one JSON file: settings, results, every district's numbers,
+  // and the district of every census block (GEOID20 -> district number).
+  const GOAL_NAMES = { neutral: "Fair & compact", proportional: "Proportional", target: "Exact seat split", maxD: "Gerrymander for Democrats", maxR: "Gerrymander for Republicans", competitive: "Competitive" };
+  function exportJson() {
+    if (!S.assign || !S.report) return;
+    const r = S.report, o = S.opts || {}, m = o.mode, k = r.k;
+    const round = (x, d) => Math.round(x * Math.pow(10, d)) / Math.pow(10, d);
+    const settings = { districts: k, goal: m, goalName: GOAL_NAMES[m] || m };
+    if (m === "target") settings.targetDemocraticSeats = o.targetD;
+    if (m === "maxD" || m === "maxR") settings.safeSeatFloorPoints = o.margin;
+    else if (m === "target") settings.safeSeatMarginPoints = o.margin;
+    if (m === "competitive") settings.tossUpRangePoints = o.band;
+    Object.assign(settings, {
+      populationTolerancePercent: round(100 * o.tol, 3), compact: o.compact !== false,
+      countySplitWeight: o.countyWeight, effort: o.effort, superthinking: !!o.endless, seed: S.seedUsed,
+    });
+    const c = r.contiguity;
+    const head = {
+      type: "redistricting-map", version: 1,
+      state: S.st, stateName: STATES[S.st].name,
+      createdAt: new Date().toISOString(),
+      finished: r.phase === "done",
+      data: { population: "2020 Census (PL 94-171), census blocks", votes: "2024 presidential results by precinct, split among blocks by voting-age population", units: "2020 census blocks (GEOID20)" },
+      settings,
+      summary: {
+        seats: { democratic: r.seats.winD, republican: k - r.seats.winD },
+        goal: (r.goal && r.goal.text) || "",
+        harrisShareOfTwoPartyVote: round(r.stateShare, 5),
+        idealPopulation: Math.round(r.ideal),
+        largestDeviationPercent: round(100 * r.maxDev, 4),
+        contiguous: c ? c.ok : null,
+        meanPolsbyPopper: round(r.meanPP, 4),
+        splitCounties: r.splitCounties,
+        efficiencyGapPercent: round(100 * r.efficiencyGap, 2),
+        meanMedianPoints: round(100 * r.meanMedian, 2),
+        seatsVotesCurveSeatsOff: round(curveGap(r), 2),
+      },
+      districts: r.districts.map((d) => ({
+        district: d.id + 1, population: Math.round(d.pop), deviationPercent: round(100 * d.dev, 4),
+        harrisVotes: Math.round(d.dem), trumpVotes: Math.round(d.rep), harrisShare: round(d.share, 5),
+        winner: d.share > 0.5 ? "D" : "R", marginPoints: round(100 * (2 * d.share - 1), 2),
+        polsbyPopper: round(d.pp, 4), areaSqKm: round(d.area / 1e6, 2), counties: d.counties, blocks: 0,
+      })),
+    };
+    const n = S.D.n;
+    for (let u = 0; u < n; u++) head.districts[S.assign[u]].blocks++;
+    // assignment written in pieces so huge states don't build one giant string
+    const parts = [JSON.stringify(head, null, 2).replace(/\n}$/, ',\n  "assignment": {\n')];
+    let chunk = "";
+    for (let u = 0; u < n; u++) {
+      chunk += '    "' + blockGeoid(u) + '": ' + (S.assign[u] + 1) + (u + 1 < n ? ",\n" : "\n");
+      if (chunk.length > 1 << 20) { parts.push(chunk); chunk = ""; }
+    }
+    parts.push(chunk + "  }\n}\n");
+    download(S.st.toLowerCase() + "-map-seed" + S.seedUsed + ".json", new Blob(parts, { type: "application/json" }));
+  }
   function exportPng() {
     if (!S.map) return;
     S.map.canvas.toBlob((b) => b && download(S.st.toLowerCase() + "-map.png", b));
@@ -772,6 +828,7 @@
   $("rd-zoom-out").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1 / 1.6));
   $("rd-zoom-reset").addEventListener("click", () => S.map && S.map.resetView());
   el.csv.addEventListener("click", exportCsv);
+  el.json.addEventListener("click", exportJson);
   el.png.addEventListener("click", exportPng);
   el.tbody.addEventListener("mouseover", (e) => {
     const tr = e.target.closest("tr");
