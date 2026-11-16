@@ -741,7 +741,7 @@
       if (chunk.length > 1 << 20) { parts.push(chunk); chunk = ""; }
     }
     parts.push(chunk);
-    download(S.st.toLowerCase() + "-block-assignments-seed" + S.seedUsed + ".csv", new Blob(parts, { type: "text/csv" }));
+    download(S.st.toLowerCase() + "-dra-block-assignments-seed" + S.seedUsed + ".csv", new Blob(parts, { type: "text/csv" }));
   }
   // The whole map as one JSON file: settings, results, every district's numbers,
   // and the district of every census block (GEOID20 -> district number).

@@ -234,11 +234,12 @@
         <div class="rd-tablehead">
           <h3>Districts</h3>
           <div class="rd-exports">
-            <button type="button" class="btn btn-ghost" id="rd-csv">Download assignments (CSV)</button>
+            <button type="button" class="btn btn-ghost" id="rd-csv" title="Block assignment file (GEOID20,District), the import format Dave's Redistricting accepts">Export for Dave's Redistricting (DRA)</button>
             <button type="button" class="btn btn-ghost" id="rd-json">Download map (JSON)</button>
             <button type="button" class="btn btn-ghost" id="rd-png">Save map image</button>
           </div>
         </div>
+        <p class="small muted rd-export-hint">The DRA export is a block assignment file (<span class="mono">GEOID20,District</span>, every 2020 census block). In Dave's Redistricting, create a new congressional map for the same state with the same number of districts, then choose <strong>Import</strong> and pick this file. Other tools such as Districtr also accept it.</p>
         <div class="rd-tablewrap">
           <table class="rd-table" id="rd-table">
             <thead>

@@ -194,6 +194,7 @@
 .rd-tablehead h3 { margin: 0; }
 .rd-exports { display: flex; gap: 8px; flex-wrap: wrap; }
 .rd-exports .btn { padding: 7px 12px; font-size: .85rem; border-width: 2px; }
+.rd-export-hint { margin: -2px 0 10px; }
 .rd-tablewrap { overflow-x: auto; max-height: 520px; overflow-y: auto; border: 2px solid var(--line); border-radius: var(--radius-sm); }
 .rd-table { width: 100%; border-collapse: collapse; font-size: .9rem; font-variant-numeric: tabular-nums; }
 .rd-table th, .rd-table td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--soft); }
