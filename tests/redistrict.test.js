@@ -447,4 +447,16 @@ test("MI: districts connect over land; the Upper Peninsula only through its wate
   assert.strictEqual(noSliverLinks("MI", blocks), 0, "no district held together by sliver blocks");
 });
 
+test("TX: keeps balancing until every district is within ±0.001% (about ±7 people)", () => {
+  const { graph } = loaded.TX;
+  const g = RE.buildGraph(graph);
+  const p = RE.createPipeline(g, graph.group, { k: 38, mode: "maxR", margin: 0, tol: 0.00001, seed: 1, searchSteps: 4000, coarsePolishSteps: 30000, finePolishSteps: 100000 });
+  p.init();
+  while (!p.run(5000));
+  const r = p.report(true);
+  assert.ok(r.maxDev <= 0.00001 + 1e-12, "worst district ±" + (100 * r.maxDev).toFixed(4) + "%");
+  assert.ok(r.contiguity.ok);
+  assert.ok(!r.notes.some((x) => /Couldn't reach/.test(x)), r.notes.join(" "));
+});
+
 console.log("\n" + passed + " passed" + (process.exitCode ? ", some FAILED" : ""));

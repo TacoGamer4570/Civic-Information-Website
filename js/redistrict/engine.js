@@ -156,6 +156,14 @@
       let tol = userTol, lo = 0, hi = 0;
       function setTol(t) { tol = t; lo = ideal * (1 - t); hi = ideal * (1 + t); }
       setTol(userTol);
+      // strictPop (default): never finish with a district outside the tolerance.
+      // Balancing restarts instead of giving up; if a locked result (seats, curve)
+      // leaves no way to balance, that lock is loosened step by step, then dropped.
+      // Only "skip phase" / stop (forceSkip) can end it early. The precinct stage of
+      // a pipeline turns it off: whole precincts often can't get that close, and the
+      // block stage finishes the job.
+      const strictPop = opts.strictPop !== false;
+      let forceSkip = false, stuckRounds = 0, lockDropped = false;
 
       // partisan requirements: top `needD` districts must be >= 50%+h for Dems,
       // bottom `needR` must be <= 50%-h. Max modes raise the requirement step by step.
@@ -761,6 +769,105 @@
         moveCountyRaw(u, B, A);
         return false;
       }
+      // ----- swap move (fine population balancing) -----
+      // Trade a unit from A to B and a unit from B back to A in one step, so the net
+      // change can be a handful of people even where every border unit holds hundreds
+      // (no single flip can get a district within a tight tolerance there).
+      function moveUnit(u, B) {
+        const A = assign[u];
+        if (A === B || dCnt[A] <= 1) return null;
+        let touches = false;
+        for (let j = start[u]; j < start[u + 1]; j++) if (nconn[j] && assign[nbr[j]] === B) { touches = true; break; }
+        if (!touches || !stillConnectedWithout(u, A)) return null;
+        if (massOn) {
+          if (dm[mass[u] * k + B] > 0 && !touchesByLand(u, B)) return null;
+          if (!stillConnectedWithout(u, A, true)) return null;
+        }
+        let inA = 0, inB = 0;
+        for (let j = start[u]; j < start[u + 1]; j++) {
+          const a = assign[nbr[j]];
+          if (a === A) inA += nlen[j]; else if (a === B) inB += nlen[j];
+        }
+        const saved = save(A, B);
+        setStats(A, dPop[A] - pop[u], dDem[A] - dem[u], dRep[A] - rep[u], dArea[A] - area[u], dPerim[A] - border[u] + 2 * inA, dCnt[A] - 1);
+        setStats(B, dPop[B] + pop[u], dDem[B] + dem[u], dRep[B] + rep[u], dArea[B] + area[u], dPerim[B] + border[u] - 2 * inB, dCnt[B] + 1);
+        moveCounty(u, A, B); assign[u] = B;
+        refresh(A); refresh(B);
+        return saved;
+      }
+      function unmoveUnit(u, A, B, saved) { assign[u] = A; moveCountyRaw(u, B, A); restoreSaved(A, B, saved); }
+      // Walk the A-B border from a random cut edge (up to SWAP_WALK units), then try
+      // the pairs (a in A, b in B) whose populations differ by closest to what would
+      // even the two districts out.
+      const SWAP_WALK = 400;
+      const swapA = [], swapB = [], swapPairs = [];
+      function onBorder(x, other) {
+        for (let j = start[x]; j < start[x + 1]; j++) if (nconn[j] && assign[nbr[j]] === other) return true;
+        return false;
+      }
+      function swapMove() {
+        // aim at a district that is still outside the tolerance, when one turns up quickly
+        let e = -1;
+        const lim = tol * ideal + 1e-6;
+        for (let t = 0; t < 40; t++) {
+          const e2 = randomCutEdge();
+          if (e2 < 0) break;
+          if (e < 0) e = e2;
+          if (Math.abs(dPop[assign[eu[e2]]] - ideal) > lim || Math.abs(dPop[assign[ev[e2]]] - ideal) > lim) { e = e2; break; }
+        }
+        if (e < 0) return false;
+        const u = eu[e], v = ev[e];
+        const A = assign[u], B = assign[v];
+        const want = (dPop[A] - dPop[B]) / 2; // people to move from A to B
+        if (Math.abs(want) < 0.5) return false;
+        swapA.length = 0; swapB.length = 0;
+        stampId++;
+        let qh = 0, qt = 0;
+        queue[qt++] = u; queue[qt++] = v; stamp[u] = stamp[v] = stampId;
+        while (qh < qt && qt < SWAP_WALK) {
+          const x = queue[qh++];
+          (assign[x] === A ? swapA : swapB).push(x);
+          for (let j = start[x]; j < start[x + 1]; j++) {
+            const y = nbr[j];
+            if (!nconn[j] || stamp[y] === stampId) continue;
+            const d = assign[y];
+            if ((d === A && onBorder(y, B)) || (d === B && onBorder(y, A))) { stamp[y] = stampId; queue[qt++] = y; }
+          }
+        }
+        for (; qh < qt; qh++) (assign[queue[qh]] === A ? swapA : swapB).push(queue[qh]);
+        if (!swapA.length || !swapB.length) return false;
+        // best partner in B for each a (B sorted by population), keep the pairs that help
+        swapB.sort((x, y) => pop[x] - pop[y]);
+        swapPairs.length = 0;
+        const limit = Math.abs(want) - 1e-9;
+        for (const a of swapA) {
+          const target = pop[a] - want;
+          let lo2 = 0, hi2 = swapB.length - 1;
+          while (lo2 < hi2) { const mid = (lo2 + hi2) >> 1; if (pop[swapB[mid]] < target) lo2 = mid + 1; else hi2 = mid; }
+          for (const i of [lo2 - 1, lo2]) {
+            if (i < 0 || i >= swapB.length) continue;
+            const b = swapB[i], er = Math.abs(pop[a] - pop[b] - want);
+            if (er < limit) swapPairs.push([er, a, b]);
+          }
+        }
+        if (!swapPairs.length) return false;
+        swapPairs.sort((p1, p2) => p1[0] - p2[0]);
+        for (let t = 0; t < Math.min(6, swapPairs.length); t++) {
+          const a = swapPairs[t][1], b = swapPairs[t][2];
+          const s1 = moveUnit(a, B);
+          if (!s1) continue;
+          const s2 = moveUnit(b, A);
+          if (!s2) { unmoveUnit(a, A, B, s1); continue; }
+          proposals++;
+          if (fairOn) curFair = fairness();
+          if (wPart > 0) partE = partisanE();
+          const newE = energy();
+          if (lockOk() && (newE <= curE || rand() < Math.exp(-(newE - curE) / T))) { accepted++; curE = newE; return true; }
+          unmoveUnit(b, B, A, s2); unmoveUnit(a, A, B, s1);
+          return false;
+        }
+        return false;
+      }
       function touchesByLand(u, B) {
         for (let j = start[u]; j < start[u + 1]; j++) if (nconn[j] === 1 && assign[nbr[j]] === B) return true;
         return false;
@@ -904,13 +1011,16 @@
         stepCount++; phaseStep++;
         const frac = Math.min(1, phaseStep / phaseBudget);
         T = T0 * Math.pow(T1 / T0, frac);
-        if (rand() < recomProb) recomMove(); else flipMove();
+        if (rand() < recomProb) recomMove();
+        else if ((phase === "balance" || phase === "final") && rand() < (stuckRounds ? 0.6 : 0.3)) swapMove();
+        else flipMove();
         if ((stepCount & 0xffff) === 0) resync();
         const check = (phaseStep & 63) === 0;
 
         if (phase === "balance") {
           if (check && popOk()) { nextPhase(); return; }
           if (phaseStep >= phaseBudget) {
+            if (strictPop && !forceSkip) { keepBalancing(); return; }
             const w = worstDev();
             notes.push("Couldn't reach ±" + (userTol * 100).toFixed(2) + "% population balance with whole " + unitName + "s; best was ±" + (w * 100).toFixed(3) + "%.");
             setTol(w + 1e-9);
@@ -966,13 +1076,35 @@
         } else if (phase === "final") {
           // strict rebalancing of the polished map, then keep whichever valid map is better
           if (check && popOk()) {
-            if (best && curE > best.E) restore(best.assign);
+            if (best && curE > best.E) { const cur = assign.slice(); restore(best.assign); if (!popOk()) restore(cur); }
             phase = "done";
           } else if (phaseStep >= phaseBudget) {
-            if (best) restore(best.assign);
+            if (best) { const cur = assign.slice(); restore(best.assign); if (strictPop && !popOk()) restore(cur); }
+            if (strictPop && !forceSkip && !popOk()) { keepBalancing(); return; }
             phase = "done";
           }
         }
+      }
+      // out of steps with a district still outside the tolerance: start the round
+      // again (the temperature reheats), loosening a lock that may be in the way
+      function keepBalancing() {
+        stuckRounds++;
+        phaseStep = 0;
+        // let tiny population fixes win over shape while it's stuck
+        if (phase === "balance" && wComp > 0) { wComp = Math.max(0.01, wComp * 0.5); curE = energy(); }
+        if (lock && stuckRounds >= 2) relaxLock();
+      }
+      function relaxLock() {
+        if (stuckRounds >= 5) {
+          lock = null;
+          if (!lockDropped) {
+            lockDropped = true;
+            notes.push("To get every district within ±" + (userTol * 100).toFixed(userTol < 0.001 ? 3 : 2) + "%, the " + (isProp ? "seats–votes curve" : "seat result") + " was unlocked while balancing population, so it may have shifted.");
+          }
+          return;
+        }
+        if (lock.pos) { for (let q = 0; q < k; q++) if (Number.isFinite(lock.pos[q]) && lock.pos[q] < thFloor) lock.pos[q] -= 0.005; }
+        if (lock.fair != null) lock.fair += 0.5;
       }
 
       // Proportional: pull the seats-votes curve toward the 1-for-1 line (nothing locked yet)
@@ -1117,7 +1249,10 @@
         };
       }
       function progressGoal() {
-        if (phase !== "search") return { achieved: false, text: phase === "balance" ? "Balancing population" : goal.text };
+        if (phase !== "search") {
+          if (phase !== "balance") return { achieved: false, text: goal.text };
+          return { achieved: false, text: "Balancing population: largest district is ±" + (worstDev() * 100).toFixed(3) + "% off (target ±" + (userTol * 100).toFixed(3) + "%)" + (stuckRounds ? "; still going (round " + (stuckRounds + 1) + ")" : "") };
+        }
         if (isMax) {
           const party = mode === "maxD" ? "Democratic" : "Republican", need = Math.min(k, maxTarget);
           if (posIdx >= 0) return { achieved: false, text: "Locked " + cntTier[0] + " safe seats and " + cntTier[nTier - 1] + " wins; now pushing the #" + (posIdx + 1) + " district toward the floor" };
@@ -1147,12 +1282,15 @@
         },
         steps(nSteps) { for (let i = 0; i < nSteps && phase !== "done"; i++) stepOnce(); return phase === "done"; },
         // skip ahead to the next phase
+        // "skip phase" / stop: the only way to end balancing early (just this once)
         finishNow() {
+          forceSkip = true;
           if (phase === "polish") { nextPhase(); }
           else if (phase === "final") { if (best) restore(best.assign); phase = "done"; }
           else if (phase === "search" || phase === "balance") {
             phaseStep = phaseBudget; targetSteps = phaseBudget; searchTotal = Infinity; stepOnce();
           }
+          forceSkip = false;
         },
         report,
         verifyContiguity,
@@ -1214,7 +1352,7 @@
         if (useCoarse) {
           coarse = createEngine(agg.graph, Object.assign({}, opts, {
             // as tight as whole precincts allow, so the block stage has little left to move
-            rand, tol: coarseTol, unitName: "precinct", initialAssign: coarseStart(),
+            rand, tol: coarseTol, unitName: "precinct", initialAssign: coarseStart(), strictPop: false,
             phases: neutral ? ["polish"] : ["search", "polish"],
             polishSteps: opts.coarsePolishSteps, tune: coarseTune,
           }));

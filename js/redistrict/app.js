@@ -400,10 +400,11 @@
     } else {
       const label = {
         init: "Starting…",
-        balance: "Balancing population (moving " + unit + ")…",
+        // block stage: it keeps going until every district is within the tolerance
+        balance: r.stage === "block" ? escapeHtml(r.goal.text) + " (moving " + unit + ")…" : "Balancing population (moving " + unit + ")…",
         search: escapeHtml(r.goal.text) + " (moving " + unit + ")…",
         polish: r.stage === "precinct" ? "Making districts compact, seat result locked (moving precincts)…" : "Smoothing borders and evening out population, block by block…",
-        final: "Final population balancing, block by block…",
+        final: "Final population balancing, block by block (until every district is within ±" + (100 * r.userTol).toFixed(r.userTol < 0.0001 ? 3 : r.userTol < 0.001 ? 2 : 1) + "%)…",
       }[r.phase] || "";
       text = label + " <span class='muted'>" + steps + "</span>";
     }
