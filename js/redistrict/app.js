@@ -42,13 +42,13 @@
   const $ = (id) => document.getElementById(id);
   const el = {
     form: $("rd-form"), statline: $("rd-statline"), k: $("rd-k"), kReset: $("rd-k-reset"), kHint: $("rd-k-hint"),
-    curveField: $("rd-curve-field"), targetField: $("rd-target-field"), target: $("rd-target"), targetOut: $("rd-target-out"), targetOf: $("rd-target-of"),
+    curveField: $("rd-curve-field"), rangeNote: $("rd-curve-range-note"), targetField: $("rd-target-field"), target: $("rd-target"), targetOut: $("rd-target-out"), targetOf: $("rd-target-of"),
     marginField: $("rd-margin-field"), margin: $("rd-margin"), marginOut: $("rd-margin-out"), marginLabel: $("rd-margin-label"), marginHint: $("rd-margin-hint"),
     tol: $("rd-tol"), county: $("rd-county"), effort: $("rd-effort"), seed: $("rd-seed"), seedClear: $("rd-seed-clear"),
     run: $("rd-run"), pause: $("rd-pause"), skip: $("rd-skip"),
     canvas: $("rd-map"), tip: $("rd-tip"), loading: $("rd-loading"), legend: $("rd-legend"),
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
-    results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), sv: $("rd-sv"), svTip: $("rd-sv-tip"), legendTarget: $("rd-legend-target"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
+    results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), sv: $("rd-sv"), svTip: $("rd-sv-tip"), svLegendWindow: $("rd-sv-legend-window"), legendTarget: $("rd-legend-target"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
     csv: $("rd-csv"), json: $("rd-json"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
     apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
@@ -146,6 +146,7 @@
     const pmargin = new Float64Array(np);
     for (let p = 0; p < np; p++) { const t = meta.precincts.dem[p] + meta.precincts.rep[p]; pmargin[p] = t > 0 ? (100 * (meta.precincts.dem[p] - meta.precincts.rep[p])) / t : 0; }
     S.D = { meta, A, overview, raster: meta.raster, graph, n: meta.n, pop, populated, share: dem / (dem + rep), pmargin, np, colors: new Uint32Array(meta.n) };
+    syncRangeNote(meta.name, dem / (dem + rep));
     el.statline.innerHTML = "<strong>" + escapeHtml(meta.name) + "</strong>: " + fmt(meta.n) + " census blocks · " + fmt(pop) + " people<br>2024: Harris " + pct(dem / (dem + rep)) + " · Trump " + pct(rep / (dem + rep)) + " (two-party)";
     el.k.value = meta.seats;
     el.target.dataset.touched = "";
@@ -579,7 +580,8 @@
     const mm = r.meanMedian;
     const cg = curveGap(r);
     tiles.push(tile("Seats–votes curve", cg.toFixed(1) + " seats off",
-      wholeCurve() ? "Average gap from the 1-for-1 line (each point of vote = one point of seats) over every statewide vote share from 0% to 100%." : "Average gap from the 1-for-1 line (each point of vote = one point of seats) over uniform swings of up to 10 points either way.", S.opts.mode === "proportional" && cg < 0.5 ? "is-good" : ""));
+      wholeCurve() ? "Average gap from the 1-for-1 line (each point of vote = one point of seats) over every statewide vote share from 0% to 100%." :
+        rangeCurve() ? "Average gap from the 1-for-1 line (each point of vote = one point of seats) over statewide margins from " + marginLabel(rangeWindow(r.stateShare).lo) + " to " + marginLabel(rangeWindow(r.stateShare).hi) + " (±20 margin points around the state's lean in a tied national vote)." : "Average gap from the 1-for-1 line (each point of vote = one point of seats) over uniform swings of up to 10 points either way.", S.opts.mode === "proportional" && cg < 0.5 ? "is-good" : ""));
     tiles.push(tile("Mean–median", (Math.abs(mm) < 0.0005 ? "0" : (100 * Math.abs(mm)).toFixed(1) + " pts " + (mm < 0 ? "R" : "D")), "Gap between the median and average district. Near 0 is symmetric."));
     el.tiles.innerHTML = tiles.join("");
 
@@ -651,11 +653,25 @@
   // average seats away from the 1-for-1 line: over swings of -10..+10 points, or,
   // for the whole-line option, over every statewide vote share from 0% to 100%
   function wholeCurve() { return S.opts && S.opts.mode === "proportional" && S.opts.curve === "whole"; }
+  // the "range" option: +/- 20 margin points (10 points of share) around the 2024
+  // result shifted to a tied national vote
+  const RANGE_HALF = 0.1;
+  function marginLabel(share) { const m = 100 * (2 * share - 1); return Math.abs(m) < 0.05 ? "even" : (m > 0 ? "D+" : "R+") + Math.abs(m).toFixed(1); }
+  function rangeWindow(V) {
+    const c = V + 0.5 - window.RedistrictEngine.US2024_SHARE;
+    return { center: c, lo: Math.max(0, c - RANGE_HALF), hi: Math.min(1, c + RANGE_HALF) };
+  }
+  function syncRangeNote(name, V) {
+    const w = rangeWindow(V);
+    el.rangeNote.textContent = "Centered on the state's 2024 margin shifted to a tied national vote (the US was R+1.5). " + name + " (" + marginLabel(V) + ") is centered on " + marginLabel(w.center) + ", so every statewide margin from " + marginLabel(w.lo) + " to " + marginLabel(w.hi) + " counts the same.";
+  }
+  function rangeCurve() { return S.opts && S.opts.mode === "proportional" && S.opts.curve === "range"; }
   function curveGap(r) {
     const sh = r.districts.map((d) => d.share), k = r.k, V = r.stateShare;
     let g = 0, m = 0;
-    if (wholeCurve()) {
-      for (let i = 0; i <= 1000; i++) { const v = i / 1000; g += Math.abs(seatsAt(sh, v - V) - Math.round(k * v)); m++; }
+    if (wholeCurve() || rangeCurve()) {
+      const w = wholeCurve() ? { lo: 0, hi: 1 } : rangeWindow(V);
+      for (let v = w.lo; v <= w.hi + 1e-9; v += 0.001) { g += Math.abs(seatsAt(sh, v - V) - Math.round(k * v)); m++; }
     } else {
       for (let i = -100; i <= 100; i++) { const x = i / 1000; g += Math.abs(seatsAt(sh, x) - Math.round(k * Math.min(1, Math.max(0, V + x)))); m++; }
     }
@@ -665,9 +681,13 @@
     const sh = r.districts.map((d) => d.share), k = r.k, V = r.stateShare;
     const W = Math.max(280, Math.round(el.sv.clientWidth || 720)), H = W < 520 ? 220 : 260, padL = 40, padR = 12, padT = 10, padB = 28;
     const iw = W - padL - padR, ih = H - padT - padB;
-    const x0 = wholeCurve() ? 0 : Math.max(0, V - 0.25), x1 = wholeCurve() ? 1 : Math.min(1, V + 0.25);
+    const rw = rangeCurve() ? rangeWindow(V) : null;
+    const x0 = wholeCurve() ? 0 : rw ? Math.max(0, rw.lo - 0.05) : Math.max(0, V - 0.25), x1 = wholeCurve() ? 1 : rw ? Math.min(1, rw.hi + 0.05) : Math.min(1, V + 0.25);
     const X = (v) => padL + ((v - x0) / (x1 - x0)) * iw, Y = (n) => padT + ih - (n / k) * ih;
     let s = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Democratic seats under a uniform swing, against a 1-for-1 line">';
+    // the range option: shade the vote shares that are scored
+    if (rw) s += '<rect class="rd-sv-window" x="' + X(rw.lo).toFixed(1) + '" y="' + padT + '" width="' + (X(rw.hi) - X(rw.lo)).toFixed(1) + '" height="' + ih + '"/>';
+    el.svLegendWindow.hidden = !rw;
     const step = [1, 2, 5, 10, 20, 25, 50, 100].find((t) => k / t <= 6) || 100;
     for (let n = 0; n <= k; n += step) {
       const yy = Y(n).toFixed(1);
@@ -760,7 +780,10 @@
     const round = (x, d) => Math.round(x * Math.pow(10, d)) / Math.pow(10, d);
     const settings = { districts: k, goal: m, goalName: GOAL_NAMES[m] || m };
     if (m === "target") settings.targetDemocraticSeats = o.targetD;
-    if (m === "proportional") settings.seatsVotesLine = o.curve === "whole" ? "whole line equally" : "weighted around the 2024 vote";
+    if (m === "proportional") {
+      settings.seatsVotesLine = o.curve === "whole" ? "whole line equally" : o.curve === "range" ? "evenly within ±20 margin points (national-adjusted)" : "weighted around the 2024 vote";
+      if (o.curve === "range") { const w = rangeWindow(r.stateShare); settings.seatsVotesRange = { center: marginLabel(w.center), from: marginLabel(w.lo), to: marginLabel(w.hi), centerHarrisShare: round(w.center, 4), fromHarrisShare: round(w.lo, 4), toHarrisShare: round(w.hi, 4) }; }
+    }
     if (m === "maxD" || m === "maxR") settings.safeSeatFloorPoints = o.margin;
     else if (m === "target") settings.safeSeatMarginPoints = o.margin;
     if (m === "competitive") settings.tossUpRangePoints = o.band;

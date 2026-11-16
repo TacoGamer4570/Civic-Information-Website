@@ -206,6 +206,22 @@ test("proportional, whole-line option: valid map, scored over every vote share",
   assert.ok(whole.contiguity.ok && whole.maxDev <= 0.02 + 1e-9);
   // the whole-line score also counts the far ends, which no district reaches here, so it's larger
   assert.ok(Number.isFinite(whole.curveDev) && whole.curveDev > weighted.curveDev, whole.curveDev + " vs " + weighted.curveDev);
+  // evenly within +/- 20 margin points of the national-adjusted result
+  const range = run(g, Object.assign({ curve: "range" }, o)).report(true);
+  assert.ok(range.contiguity.ok && range.maxDev <= 0.02 + 1e-9 && Number.isFinite(range.curveDev));
+  // the window: +/- 20 margin points (10 points of share) around the national-adjusted center
+  const c = range.stateShare + 0.5 - RE.US2024_SHARE;
+  assert.ok(Math.abs(range.curveWindow.lo - (c - 0.1)) < 1e-9 && Math.abs(range.curveWindow.hi - (c + 0.1)) < 1e-9, JSON.stringify(range.curveWindow));
+  assert.ok(Math.abs(whole.curveWindow.lo) < 1e-9 && Math.abs(whole.curveWindow.hi - 1) < 1e-9);
+});
+
+test("national adjustment: the 2024 US two-party vote was R+1.5, so a D+10 state centers on D+11.5", () => {
+  const usMargin = 100 * (2 * RE.US2024_SHARE - 1);
+  assert.ok(Math.abs(usMargin + 1.5) < 0.01, String(usMargin));
+  const state = 0.55, center = state + 0.5 - RE.US2024_SHARE; // D+10
+  assert.ok(Math.abs(100 * (2 * center - 1) - 11.5) < 0.01);
+  // +/- 20 margin points: R+8.5 to D+31.5
+  assert.ok(Math.abs(100 * (2 * (center - 0.1) - 1) + 8.5) < 0.01 && Math.abs(100 * (2 * (center + 0.1) - 1) - 31.5) < 0.01);
 });
 
 test("superthinking: cycles keep the best map, never get worse, and stop cleanly", () => {

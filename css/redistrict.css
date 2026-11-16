@@ -189,6 +189,8 @@
 .rd-sv-dot { fill: var(--ink); stroke: var(--paper); stroke-width: 2; }
 .rd-sv-cross { stroke: var(--chart-base); stroke-width: 1; }
 .rd-sv-hit { fill: transparent; cursor: crosshair; }
+.rd-sv-window { fill: var(--soft); }
+.rd-sw-window { background: var(--soft); border: 1px solid var(--chart-base); }
 
 .rd-tablehead { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .rd-tablehead h3 { margin: 0; }

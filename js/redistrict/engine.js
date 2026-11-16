@@ -115,6 +115,9 @@
     // a land border beats a water link, which beats a shape-only border
     function mergeConn(a, b) { return a === 1 || b === 1 ? 1 : a === 2 || b === 2 ? 2 : 0; }
     const FOUR_PI = 4 * Math.PI;
+    // 2024 US popular vote, two-party (certified): Harris 75,017,613, Trump 77,302,580
+    const US2024 = { dem: 75017613, rep: 77302580 };
+    const US2024_SHARE = US2024.dem / (US2024.dem + US2024.rep);
     const SEARCH_CAP = 1000; // max units explored when checking a flip keeps a district connected
 
     // ---------- engine ----------
@@ -221,34 +224,45 @@
       const changed = new Int32Array(n);
 
       function share(d) { const t = dDem[d] + dRep[d]; return t > 0 ? dDem[d] / t : 0.5; }
-      // Two ways to score the curve (opts.curve):
+      // Three ways to score the curve (opts.curve). x is the uniform swing from the
+      // 2024 result (statewide share = stateShare + x):
       //  "weighted" (default): centered on the 2024 vote; swings within 10 points
       //    count fully, 10-25 points half (beyond that, only the small spot term, at
       //    a fifth). Small swings are the likely ones, and the far ends of the line
       //    ask for districts most states can't draw.
       //  "whole": every vote share from 0% to 100% counts the same.
-      const wholeLine = opts.curve === "whole";
-      function swingW(x) {
-        if (wholeLine) return x;
-        const a = Math.abs(x), w = a <= 0.1 ? a : a <= 0.25 ? 0.1 + 0.5 * (a - 0.1) : 0.175 + 0.2 * (a - 0.25);
-        return x < 0 ? -w : w;
+      //  "range": every statewide margin within 20 points of a center counts the
+      //    same (opts.curveHalf, in share: default 0.10, i.e. +/- 20 margin points).
+      //    The center is the 2024 result shifted to a tied national vote
+      //    (opts.curveShift, default from the 2024 US popular vote: R+1.5 in margin,
+      //    so +0.75 points of share; a D+10 state is centered on D+11.5).
+      const curveMode = opts.curve === "whole" || opts.curve === "range" ? opts.curve : "weighted";
+      let xLo, xHi, XIN;
+      if (curveMode === "whole") { xLo = -stateShare; xHi = 1 - stateShare; XIN = 2; }
+      else if (curveMode === "range") {
+        const c0 = opts.curveShift == null ? 0.5 - US2024_SHARE : opts.curveShift, half = opts.curveHalf == null ? 0.1 : opts.curveHalf;
+        xLo = Math.max(-stateShare, c0 - half); xHi = Math.min(1 - stateShare, c0 + half); XIN = 2;
+      } else { xLo = Math.max(-0.25, -stateShare); xHi = Math.min(0.25, 1 - stateShare); XIN = 0.1; }
+      // the spot term, in the same units: y = share - 0.5 (a district flips at swing -y)
+      function swingW(y) {
+        if (curveMode === "whole") return y;
+        if (curveMode === "range") return Math.min(-xLo, Math.max(-xHi, y)); // spots past the range just need to be past it
+        const a = Math.abs(y), w = a <= 0.1 ? a : a <= 0.25 ? 0.1 + 0.5 * (a - 0.1) : 0.175 + 0.2 * (a - 0.25);
+        return y < 0 ? -w : w;
       }
       const curveTarget = new Float64Array(k);
       for (let i = 0; i < k; i++) curveTarget[i] = swingW(Math.min(1, Math.max(0, stateShare - 0.5 + (i + 0.5) / k)) - 0.5);
       // The score is mostly the gap you see on the seats-votes chart: the area between
-      // the map's seat curve (uniform swing) and the 1-for-1 line, over swings of up
-      // to 25 points (within 10 points counts double), or over the whole line, as an
-      // average share of seats, in points. A small part is the distance of each
-      // district from its spot, which also steers districts whose flip point is
-      // outside that range.
-      const XW = wholeLine ? 1 : 0.25, XIN = wholeLine ? 1 : 0.1;
-      const xLo = Math.max(-XW, -stateShare), xHi = Math.min(XW, 1 - stateShare);
+      // the map's seat curve (uniform swing) and the 1-for-1 line over that range
+      // (weighted as above), as an average share of seats, in points. A small part is
+      // the distance of each district from its spot, which also steers districts
+      // whose flip point is outside the range.
       const wOf = (a, b) => { // integral of the swing weight over [a, b]
         const inA = Math.max(a, -XIN), inB = Math.min(b, XIN);
         const inner = inB > inA ? inB - inA : 0;
         return inner + 0.5 * (b - a - inner);
       };
-      const wTot = wOf(xLo, xHi);
+      const wTot = Math.max(1e-9, wOf(xLo, xHi));
       // weighted integral of |c - k (stateShare + x)| over [a, b]
       function gapPiece(c, a, b) {
         if (b <= a) return 0;
@@ -1091,7 +1105,8 @@
           gerry: isMax ? { floor: floorPts, safe: cntTier[0], wins: cntTier[nTier - 1], margins: partyMargins() } : null,
           efficiencyGap: (wastedD - wastedR) / votes, // >0 means Dem votes are wasted more (map favors R)
           meanMedian: median - mean,                  // <0 means map favors R
-          curveDev: fairness(),                       // gap from the 1-for-1 seats-votes line (points), lower is better
+          curveDev: fairness(),
+          curveWindow: { lo: stateShare + xLo, hi: stateShare + xHi }, // statewide Harris shares the curve is scored over                       // gap from the 1-for-1 seats-votes line (points), lower is better
           splitCounties: countyOn ? splitCounties : null, countySplits: splits,
           contiguity: full ? verifyContiguity() : null,
           goal: phase === "search" || phase === "balance" || phase === "init" ? progressGoal() : goal,
@@ -1477,7 +1492,7 @@
       };
     }
 
-    return { makeRng, buildGraph, aggregate, createEngine, createPipeline, createEndless, prepareGraph, expandAssign };
+    return { makeRng, buildGraph, aggregate, createEngine, createPipeline, createEndless, prepareGraph, expandAssign, US2024, US2024_SHARE };
   }
 
   // Web Worker entry point. Stringified and run from a Blob URL, so it works from file:// too.
