@@ -46,7 +46,7 @@ Most fields aren't final yet. Every candidate is tagged **running**, **expected 
 
 ## Redistricting simulator
 
-`redistricting.html` draws maps for **California, Texas, Florida, New York, Illinois, Pennsylvania, Ohio, Georgia, North Carolina, Michigan, New Jersey, Virginia, Washington, Arizona, Indiana, Massachusetts, Tennessee, Colorado, Maryland, Minnesota, Missouri, Wisconsin, Alabama, South Carolina, Kentucky, Louisiana, Oregon, Iowa, Nevada, Montana, and New Hampshire** with Markov chain Monte Carlo, built from **2020 Census blocks** (from 32k in NH to 669k in TX):
+`redistricting.html` draws maps for **California, Texas, Florida, New York, Illinois, Pennsylvania, Ohio, Georgia, North Carolina, Michigan, New Jersey, Virginia, Washington, Arizona, Indiana, Massachusetts, Tennessee, Colorado, Maryland, Minnesota, Missouri, Wisconsin, Alabama, South Carolina, Kentucky, Louisiana, Oregon, Iowa, Nevada, New Mexico, Montana, New Hampshire, and West Virginia** with Markov chain Monte Carlo, built from **2020 Census blocks** (from 32k in NH to 669k in TX):
 
 - **Population:** exact 2020 Census block counts (P.L. 94-171).
 - **Votes:** 2024 presidential results by precinct ([NYT](https://github.com/nytimes/presidential-precinct-map-2024)), split to the blocks inside each precinct by voting-age population. Block votes are estimates; statewide totals match the precinct data exactly.
@@ -69,11 +69,11 @@ Moves are ReCom (merge two districts, cut a random spanning tree into equal halv
 
 ### Rebuilding the data
 
-The files in `data/redistricting/` are generated (about 93 MB). To rebuild them (downloads ~3 GB from `int.nyt.com` and `www2.census.gov`; Texas needs the most memory):
+The files in `data/redistricting/` are generated (about 320 MB). To rebuild them (downloads ~3 GB from `int.nyt.com` and `www2.census.gov`; Texas needs the most memory):
 
 ```bash
 pip install shapely pyproj numpy scipy geopandas rasterio
-python3 tools/redistricting/build_data.py TX CA PA FL NC MI VA OH GA NV WI AZ NY IL MN CO OR WA NH MD MA NJ TN IN MO SC AL MT KY LA IA
+python3 tools/redistricting/build_data.py TX CA PA FL NC MI VA OH GA NV WI AZ NY IL MN CO OR WA NH MD MA NJ TN IN MO SC AL MT KY LA IA WV NM
 ```
 
 ## Project layout

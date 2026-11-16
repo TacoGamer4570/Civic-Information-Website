@@ -14,6 +14,7 @@
     TN: { name: "Tennessee", seats: 9 }, IN: { name: "Indiana", seats: 9 }, MO: { name: "Missouri", seats: 8 },
     SC: { name: "South Carolina", seats: 7 }, AL: { name: "Alabama", seats: 7 }, MT: { name: "Montana", seats: 2 },
     KY: { name: "Kentucky", seats: 6 }, LA: { name: "Louisiana", seats: 6 }, IA: { name: "Iowa", seats: 4 },
+    WV: { name: "West Virginia", seats: 2 }, NM: { name: "New Mexico", seats: 3 },
   };
   // steps for the partisan search; polishing steps per precinct (first stage) and per block (second stage)
   const EFFORT = {

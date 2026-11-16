@@ -67,6 +67,8 @@ STATES = {
     "KY": {"fips": "21", "name": "Kentucky", "seats": 6, "pl": "Kentucky"},
     "LA": {"fips": "22", "name": "Louisiana", "seats": 6, "pl": "Louisiana"},
     "IA": {"fips": "19", "name": "Iowa", "seats": 4, "pl": "Iowa"},
+    "WV": {"fips": "54", "name": "West Virginia", "seats": 2, "pl": "West_Virginia"},
+    "NM": {"fips": "35", "name": "New Mexico", "seats": 3, "pl": "New_Mexico"},
 }
 NYT_URL = "https://int.nyt.com/newsgraphics/elections/map-data/2024/national/{st}-precincts-with-results.topojson.gz"
 PL_URL = ("https://www2.census.gov/programs-surveys/decennial/2020/data/"
