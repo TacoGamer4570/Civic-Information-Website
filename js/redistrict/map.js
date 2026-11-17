@@ -28,6 +28,7 @@
     this.labels = [];
     this.hover = -1;
     this.highlightDistrict = -1;
+    this.showCounties = false;       // dashed county lines (needs data.county)
     this._bind();
     this.resize();
   }
@@ -47,6 +48,12 @@
     v = ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
     colorCache.set(css, v);
     return v;
+  }
+  // c with o laid over it at the opacity in o's alpha byte (both packed)
+  function overlay(c, o) {
+    const a = o >>> 24, ia = 255 - a;
+    const r = ((c & 255) * ia + (o & 255) * a) / 255, g = (((c >>> 8) & 255) * ia + ((o >>> 8) & 255) * a) / 255, b = (((c >>> 16) & 255) * ia + ((o >>> 16) & 255) * a) / 255;
+    return (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
   }
   RedistrictMap.packColor = packColor;
 
@@ -189,6 +196,11 @@
     // colors + borders
     const colors = this.colors, dist = this.dist, hl = this.highlightDistrict;
     const thick = dpr >= 1.25 ? 2 : 1;
+    // county lines: dashed, under the district borders
+    const county = this.showCounties ? this.data.county : null;
+    const countyC = packColor(css.getPropertyValue("--map-county").trim() || "rgba(20,20,20,.55)");
+    const dash = 6 * thick, dashOn = 4 * thick;
+    const sameCounty = (j, cu) => j === 0 || j === WATER || county[j - 1] === cu;
     for (let y = 0; y < H; y++) {
       const row = y * W;
       for (let x = 0; x < W; x++) {
@@ -211,7 +223,17 @@
           }
           if (edge) c = ink;
           else if (hl >= 0 && d !== hl) c = (((c & 0xfefefe) >>> 1) + ((bg & 0xfefefe) >>> 1)) | 0xff000000;
-        } else if ((x > 0 && ids[row + x - 1] === 0) || (y > 0 && ids[row - W + x] === 0)) c = ink;
+          if (edge) { pix[row + x] = c >>> 0; continue; }
+        } else if ((x > 0 && ids[row + x - 1] === 0) || (y > 0 && ids[row - W + x] === 0)) { pix[row + x] = ink; continue; }
+        if (county && (x + y) % dash < dashOn) {
+          const cu = county[u];
+          let line = false;
+          for (let t = 1; t <= thick && !line; t++) {
+            if (x >= t && !sameCounty(ids[row + x - t], cu)) line = true;
+            if (y >= t && !sameCounty(ids[row - t * W + x], cu)) line = true;
+          }
+          if (line) c = overlay(c >>> 0, countyC);
+        }
         pix[row + x] = c >>> 0;
       }
     }

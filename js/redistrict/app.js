@@ -49,7 +49,7 @@
     canvas: $("rd-map"), tip: $("rd-tip"), loading: $("rd-loading"), legend: $("rd-legend"),
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
     results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), sv: $("rd-sv"), svTip: $("rd-sv-tip"), svLegendWindow: $("rd-sv-legend-window"), legendTarget: $("rd-legend-target"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
-    csv: $("rd-csv"), json: $("rd-json"), png: $("rd-png"),
+    counties: $("rd-counties"), csv: $("rd-csv"), json: $("rd-json"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
     apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
   };
@@ -159,10 +159,11 @@
       if (tst !== S.st || !S.map) return;
       unpackIds(b64, meta.raster.detail.tile).then((ids) => { if (tst === S.st && S.map) S.map.addTile(r, c, ids); });
     };
-    S.map = new window.RedistrictMap(el.canvas, { raster: meta.raster, overview, water: A.water }, {
+    S.map = new window.RedistrictMap(el.canvas, { raster: meta.raster, overview, water: A.water, county: A.county }, {
       onHover: onHover,
       loadTile: (r, c) => loadScript("data/redistricting/" + st.toLowerCase() + "/t" + r + "_" + c + ".js").catch(() => {}),
     });
+    S.map.showCounties = el.counties.checked;
     el.loading.hidden = true;
     el.run.disabled = false;
     setColorMode("precinct");
@@ -485,15 +486,16 @@
   }
   function renderLegend() {
     if (S.colorMode === "district" && S.assign) {
-      el.legend.innerHTML = '<span class="muted">Each color is a district; neighbors always differ. Numbers label each district.</span>';
+      el.legend.innerHTML = '<span class="muted">Each color is a district; neighbors always differ. Numbers label each district.</span>' + countyLegend();
       return;
     }
     const what = S.colorMode === "precinct" || !S.assign ? "Precinct margin, 2024" : "District margin, 2024";
     const bins = LEAN.slice().reverse();
     el.legend.innerHTML = '<span class="rd-legend-title">' + what + '</span><span class="rd-ramp">' +
       bins.map((b) => '<span class="rd-ramp-cell" style="background:' + b.color + '" title="' + b.label + '"></span>').join("") +
-      '</span><span class="rd-ramp-labels"><span>R +30</span><span>even</span><span>D +30</span></span>';
+      '</span><span class="rd-ramp-labels"><span>R +30</span><span>even</span><span>D +30</span></span>' + countyLegend();
   }
+  function countyLegend() { return el.counties.checked ? '<span class="rd-legend-county">county line</span>' : ""; }
 
   // ---------- hover ----------
   function blockGeoid(u) {
@@ -861,6 +863,13 @@
   $("rd-zoom-out").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1 / 1.6));
   $("rd-zoom-reset").addEventListener("click", () => S.map && S.map.resetView());
   el.csv.addEventListener("click", exportCsv);
+  // county lines on/off (remembered on this device)
+  try { const v = localStorage.getItem("rd-counties"); if (v != null) el.counties.checked = v === "1"; } catch (e) {}
+  el.counties.addEventListener("change", () => {
+    try { localStorage.setItem("rd-counties", el.counties.checked ? "1" : "0"); } catch (e) {}
+    if (S.map) { S.map.showCounties = el.counties.checked; S.map.draw(); }
+    renderLegend();
+  });
   el.json.addEventListener("click", exportJson);
   el.png.addEventListener("click", exportPng);
   el.tbody.addEventListener("mouseover", (e) => {
