@@ -158,8 +158,8 @@
       // aim for a rough balance (strictPop false: precincts, whole counties) keep the
       // tolerance they were given; the block stages enforce the exact target.
       const exactPop = !!opts.exactPop && opts.strictPop !== false;
-      // deviation of -1, 0 or +1 person as shown (rounded): under 1.5 people from the ideal
-      const userTol = exactPop ? 1.499 / ideal : opts.tol == null ? 0.005 : opts.tol;
+      // fine whenever the deviation shows as -1, 0 or +1 person (rounded): under 1.5 people
+      const userTol = exactPop ? (1.5 - 2e-6) / ideal : opts.tol == null ? 0.005 : opts.tol;
       let tol = userTol, lo = 0, hi = 0;
       function setTol(t) { tol = t; lo = ideal * (1 - t); hi = ideal * (1 + t); }
       setTol(userTol);
@@ -748,7 +748,7 @@
         if (fairOn) curFair = fairness();
         if (wPart > 0) partE = partisanE();
         const newE = energy();
-        if (lockOk() && accept(newE - curE)) { curE = newE; return true; }
+        if (lockOk() && (phase !== "smooth" || pairInTol(A, B)) && accept(newE - curE)) { curE = newE; return true; }
         restoreSaved(A, B, saved);
         return false;
       }
@@ -1105,11 +1105,11 @@
         for (let j = start[x]; j < start[x + 1]; j++) if (nconn[j] && assign[nbr[j]] === other) return true;
         return false;
       }
-      function swapMove() {
+      function swapMove(smooth) {
         // aim at a district that is still outside the tolerance, when one turns up quickly
         let e = -1;
         const lim = tol * ideal + 1e-6;
-        for (let t = 0; t < 40; t++) {
+        for (let t = 0; t < (smooth ? 1 : 40); t++) {
           const e2 = randomCutEdge();
           if (e2 < 0) break;
           if (e < 0) e = e2;
@@ -1119,7 +1119,7 @@
         const u = eu[e], v = ev[e];
         const A = assign[u], B = assign[v];
         const want = (dPop[A] - dPop[B]) / 2; // people to move from A to B
-        if (Math.abs(want) < 0.5) return false;
+        if (!smooth && Math.abs(want) < 0.5) return false;
         swapA.length = 0; swapB.length = 0;
         stampId++;
         let qh = 0, qt = 0;
@@ -1139,6 +1139,25 @@
         // best partner in B for each a (B sorted by population), keep the pairs that help
         swapB.sort((x, y) => pop[x] - pop[y]);
         swapPairs.length = 0;
+        if (smooth) {
+          // pairs that keep both districts within the tolerance, the most protruding first
+          const outA = new Map(), outB = new Map();
+          for (const a of swapA) outA.set(a, sticksOut(a, A, B));
+          for (const b of swapB) outB.set(b, sticksOut(b, B, A));
+          for (const a of swapA) {
+            if (outA.get(a) <= 0) continue;
+            // pop[b] range that keeps both districts within the tolerance
+            const lo2 = Math.max(pop[a] + ideal - lim - dPop[A], pop[a] - (ideal + lim - dPop[B]));
+            const hi2 = Math.min(pop[a] + ideal + lim - dPop[A], pop[a] - (ideal - lim - dPop[B]));
+            if (lo2 > hi2) continue;
+            let l = 0, h = swapB.length;
+            while (l < h) { const mid = (l + h) >> 1; if (pop[swapB[mid]] < lo2) l = mid + 1; else h = mid; }
+            for (let i = l, seen = 0; i < swapB.length && pop[swapB[i]] <= hi2 && seen < 30; i++, seen++) {
+              const b = swapB[i];
+              if (outB.get(b) > 0) swapPairs.push([-(outA.get(a) + outB.get(b)), a, b]);
+            }
+          }
+        } else {
         const limit = Math.abs(want) - 1e-9;
         for (const a of swapA) {
           const target = pop[a] - want;
@@ -1149,6 +1168,7 @@
             const b = swapB[i], er = Math.abs(pop[a] - pop[b] - want);
             if (er < limit) swapPairs.push([er, a, b]);
           }
+        }
         }
         if (!swapPairs.length) return false;
         swapPairs.sort((p1, p2) => p1[0] - p2[0]);
@@ -1162,7 +1182,7 @@
           if (fairOn) curFair = fairness();
           if (wPart > 0) partE = partisanE();
           const newE = energy();
-          if (lockOk() && (newE <= curE || rand() < Math.exp(-(newE - curE) / T))) { accepted++; curE = newE; return true; }
+          if (lockOk() && (!smooth || pairInTol(A, B)) && (newE <= curE || rand() < Math.exp(-(newE - curE) / T))) { accepted++; curE = newE; return true; }
           unmoveUnit(b, B, A, s2); unmoveUnit(a, A, B, s1);
           return false;
         }
@@ -1329,6 +1349,7 @@
           partE = partisanE(); curE = energy();
         }
         else if (rand() < recomProb) recomMove();
+        else if (phase === "smooth") { if (rand() < 0.5) swapMove(true); else flipMove(); }
         else if ((phase === "balance" || phase === "final") && rand() < (stuckRounds ? 0.6 : 0.3)) swapMove();
         else flipMove();
         if ((stepCount & 0xffff) === 0) resync();
@@ -1394,13 +1415,34 @@
           // strict rebalancing of the polished map, then keep whichever valid map is better
           if (check && popOk()) {
             if (best && curE > best.E) { const cur = assign.slice(); restore(best.assign); if (!popOk()) restore(cur); }
-            phase = "done";
+            finishOrSmooth();
           } else if (phaseStep >= phaseBudget) {
             if (best) { const cur = assign.slice(); restore(best.assign); if (strictPop && !popOk()) restore(cur); }
             if (strictPop && !forceSkip && !popOk()) { keepBalancing(); return; }
-            phase = "done";
+            finishOrSmooth();
           }
+        } else if (phase === "smooth") {
+          if (phaseStep >= phaseBudget) phase = "done";
         }
+      }
+      // Balancing to a tight tolerance trades blocks one at a time with shape barely
+      // counting, which leaves jagged fingers along borders. Once every district is
+      // within the tolerance (and the map is meant to be compact), a smoothing pass
+      // only takes changes that make shapes tidier and keep every district within the
+      // tolerance: moving an empty block, or swapping a protruding block for one that
+      // dents in from the other side.
+      function finishOrSmooth() {
+        if (!compact || !strictPop || !popOk()) { phase = "done"; return; }
+        phase = "smooth"; phaseStep = 0; phaseBudget = Math.max(20000, 2 * n);
+        wComp = 1; wPop = 1e6; softPop = true; recomProb = 0; T0 = T1 = T = 1e-6;
+        recomputePen(); partE = partisanE(); curE = energy();
+      }
+      function pairInTol(A, B) { const lim = tol * ideal + 1e-6; return Math.abs(dPop[A] - ideal) <= lim && Math.abs(dPop[B] - ideal) <= lim; }
+      // how much of a unit's border faces the other district rather than its own (higher = sticks out)
+      function sticksOut(x, own, other) {
+        let s = 0;
+        for (let j = start[x]; j < start[x + 1]; j++) { const d = assign[nbr[j]]; if (d === other) s += nlen[j]; else if (d === own) s -= nlen[j]; }
+        return s;
       }
       // out of steps with a district still outside the tolerance: start the round
       // again (the temperature reheats), loosening a lock that may be in the way
@@ -1619,6 +1661,7 @@
           forceSkip = true;
           if (phase === "polish") { nextPhase(); }
           else if (phase === "final") { if (best) restore(best.assign); phase = "done"; }
+          else if (phase === "smooth") phase = "done";
           else if (phase === "search" || phase === "balance") {
             phaseStep = phaseBudget; targetSteps = phaseBudget; searchTotal = Infinity; stepOnce();
           }

@@ -242,7 +242,7 @@
       endless: el.superOn.checked,
       // exact: every district within 1 person of the ideal (the ideal is rarely a whole
       // number, so in practice each district is the ideal rounded down or up)
-      tol: el.tol.value === "exact" ? 1.499 / (S.D.pop / k) : +el.tol.value,
+      tol: el.tol.value === "exact" ? (1.5 - 2e-6) / (S.D.pop / k) : +el.tol.value,
       exactPop: el.tol.value === "exact",
       targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" || m === "proportional" ? 0 : +el.margin.value,
@@ -345,6 +345,7 @@
   function uiStep(r) {
     if (!r) return "init";
     if (r.phase === "done") return "done";
+    if (r.phase === "smooth") return "refine";
     if (r.stage === "precinct" || r.stage === "county" || r.stage === "refine" || !r.useCoarse) {
       if (r.phase === "final") return "refine";
       return r.phase === "polish" ? "polish" : r.phase;
@@ -414,6 +415,7 @@
         balance: r.stage === "block" || r.stage === "split" ? escapeHtml(r.goal.text) + " (moving " + unit + ")…" : "Balancing population (moving " + unit + ")…",
         search: escapeHtml(r.goal.text) + " (moving " + unit + ")…",
         polish: r.stage === "precinct" || r.stage === "county" || r.stage === "refine" ? "Making districts compact, seat result locked (moving " + unit + ")…" : "Smoothing borders and evening out population, block by block…",
+        smooth: "Smoothing jagged borders, population kept within the tolerance…",
         final: "Final population balancing, block by block (until every district is within " + (S.opts.exactPop ? "1 person of the ideal" : "±" + (100 * r.userTol).toFixed(r.userTol < 0.0001 ? 3 : r.userTol < 0.001 ? 2 : 1) + "%") + ")…",
       }[r.phase] || "";
       text = label + " <span class='muted'>" + steps + "</span>";
