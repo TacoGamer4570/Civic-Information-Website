@@ -192,6 +192,7 @@
     syncTarget();
     // show the tolerance in people
     for (const o of el.tol.options) {
+      if (o.value === "exact") continue;
       const t = +o.value;
       const people = Math.max(1, Math.round(ideal * t));
       o.textContent = "±" + +(t * 100).toPrecision(2) + "% (±" + fmt(people) + " " + (people === 1 ? "person" : "people") + ")" + (o.dataset.note ? " " + o.dataset.note : "");
@@ -239,7 +240,10 @@
       k, mode: m, seed, effort: el.effort.value, curve: el.form.elements.curve.value,
       compact: el.form.elements.compact.value !== "0",
       endless: el.superOn.checked,
-      tol: +el.tol.value,
+      // exact: every district within 1 person of the ideal (the ideal is rarely a whole
+      // number, so in practice each district is the ideal rounded down or up)
+      tol: el.tol.value === "exact" ? 1 / (S.D.pop / k) : +el.tol.value,
+      exactPop: el.tol.value === "exact",
       targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" || m === "proportional" ? 0 : +el.margin.value,
       band: m === "competitive" ? +el.margin.value : 5,
@@ -410,7 +414,7 @@
         balance: r.stage === "block" || r.stage === "split" ? escapeHtml(r.goal.text) + " (moving " + unit + ")…" : "Balancing population (moving " + unit + ")…",
         search: escapeHtml(r.goal.text) + " (moving " + unit + ")…",
         polish: r.stage === "precinct" || r.stage === "county" || r.stage === "refine" ? "Making districts compact, seat result locked (moving " + unit + ")…" : "Smoothing borders and evening out population, block by block…",
-        final: "Final population balancing, block by block (until every district is within ±" + (100 * r.userTol).toFixed(r.userTol < 0.0001 ? 3 : r.userTol < 0.001 ? 2 : 1) + "%)…",
+        final: "Final population balancing, block by block (until every district is within " + (S.opts.exactPop ? "1 person of the ideal" : "±" + (100 * r.userTol).toFixed(r.userTol < 0.0001 ? 3 : r.userTol < 0.001 ? 2 : 1) + "%") + ")…",
       }[r.phase] || "";
       text = label + " <span class='muted'>" + steps + "</span>";
     }
@@ -579,7 +583,8 @@
       tiles.push(tile("Contiguity", "…", "Every move keeps districts connected; the final check runs at the end"));
     }
     const range = r.maxPop - r.minPop;
-    tiles.push(tile("Population", "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
+    const offPeople = r.maxDev * r.ideal;
+    tiles.push(tile("Population", S.opts.exactPop ? (offPeople <= 1 + 1e-6 ? "Exact" : "±" + fmt(Math.ceil(offPeople - 1e-6)) + " people") : "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
       "Largest and smallest districts differ by " + fmt(range) + " " + (Math.round(range) === 1 ? "person" : "people") + ". Ideal: " + fmt(r.ideal) + ".", r.maxDev <= r.userTol + 1e-9 ? "" : "is-warn"));
     tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
     if (r.splitCounties != null) {
@@ -800,7 +805,7 @@
     else if (m === "target") settings.safeSeatMarginPoints = o.margin;
     if (m === "competitive") settings.tossUpRangePoints = o.band;
     Object.assign(settings, {
-      populationTolerancePercent: round(100 * o.tol, 3), compact: o.compact !== false,
+      populationTolerance: o.exactPop ? "exact (every district within 1 person of the ideal)" : "±" + round(100 * o.tol, 3) + "%", compact: o.compact !== false,
       countySplitWeight: o.countyRequired ? "required" : o.countyWeight, effort: o.effort, superthinking: !!o.endless, seed: S.seedUsed,
     });
     const c = r.contiguity;

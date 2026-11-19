@@ -152,10 +152,23 @@
       for (let u = 0; u < n; u++) { totalPop += pop[u]; totalDem += dem[u]; totalRep += rep[u]; }
       const ideal = totalPop / k;
       const stateShare = totalDem / (totalDem + totalRep);
-      const userTol = opts.tol == null ? 0.005 : opts.tol;
+      // Exact population (opts.exactPop): every district within 1 person of the ideal,
+      // worked out here from this graph's own total. The ideal is rarely a whole number,
+      // so in practice each district gets the ideal rounded down or up. Stages that only
+      // aim for a rough balance (strictPop false: precincts, whole counties) keep the
+      // tolerance they were given; the block stages enforce the exact target.
+      const exactPop = !!opts.exactPop && opts.strictPop !== false;
+      const userTol = exactPop ? 1 / ideal : opts.tol == null ? 0.005 : opts.tol;
       let tol = userTol, lo = 0, hi = 0;
       function setTol(t) { tol = t; lo = ideal * (1 - t); hi = ideal * (1 + t); }
       setTol(userTol);
+      // the tolerance the later phases enforce (the target, unless balancing was skipped)
+      let baseTol = userTol;
+      // With an exact target the goal search would freeze: redrawing two districts at
+      // once (ReCom) needs both halves to hit the target to the person. So the search
+      // works within +/-0.1%, and smoothing and final balancing (which don't stop until
+      // every district is within the target) bring it back to exact.
+      const SEARCH_TOL_EXACT = 0.001;
       // strictPop (default): never finish with a district outside the tolerance.
       // Balancing restarts instead of giving up; if a locked result (seats, curve)
       // leaves no way to balance, that lock is loosened step by step, then dropped.
@@ -1215,18 +1228,24 @@
           // lines, a full penalty would block every move that can fix population
           // Compactness only lightly (enough to stop aimless wandering, not enough to
           // block moves that fix population, which matters with big rural blocks)
+          // exact target with a goal search still to come: balance only as far as the
+          // search works (it loosens to +/-0.1% anyway); the later phases make it exact
+          setTol(exactPop && phases.indexOf("search") > phaseIdx ? Math.max(baseTol, SEARCH_TOL_EXACT) : baseTol);
           wPart = 0; wComp = compact ? 0.1 : 0; wCty = wCounty * 0.05; T0 = tune.balanceT0; T1 = tune.balanceT1; recomProb = tune.balanceRecom;
           phaseBudget = Math.max(20000, searchBudget, 3 * n, 2000 * k);
         } else if (p === "search") {
+          setTol(exactPop ? Math.max(baseTol, SEARCH_TOL_EXACT) : baseTol);
           wPart = 1; wComp = compact ? tune.searchComp : 0; wCty = wCounty * tune.searchComp; T0 = tune.searchT0; T1 = tune.searchT1;
           phaseBudget = searchBudget; recomProb = tune.searchRecom;
           lock = null;
           if (isMax) { tierIdx = 0; posIdx = -1; tierLock.fill(-1); posLock.fill(-Infinity); lock = { tiers: tierLock, pos: posLock }; }
         } else if (p === "polish") {
+          setTol(baseTol);
           wPart = fairOn ? tune.polishFair : 0; wComp = 1; wCty = wCounty;
           T0 = tune.polishT0; T1 = tune.polishT1; phaseBudget = polishBudget; recomProb = tune.polishRecom;
           if ((!lock || (fairOn && lock.fair == null)) && mode !== "neutral") lock = currentLock();
         } else if (p === "final") {
+          setTol(baseTol);
           if (countyLockOn && !countyTreeOn) tidySplits();
           wPart = fairOn ? tune.polishFair : 0; wComp = compact ? 1 : 0; wCty = wCounty;
           if ((!lock || (fairOn && lock.fair == null)) && mode !== "neutral") lock = currentLock();
@@ -1320,7 +1339,7 @@
             if (strictPop && !forceSkip) { keepBalancing(); return; }
             const w = worstDev();
             notes.push("Couldn't reach ±" + (userTol * 100).toFixed(2) + "% population balance with whole " + unitName + "s; best was ±" + (w * 100).toFixed(3) + "%.");
-            setTol(w + 1e-9);
+            setTol(w + 1e-9); baseTol = tol;
             nextPhase();
           }
         } else if (phase === "search") {
@@ -1559,7 +1578,11 @@
             for (let c = 0; c < nc; c++) if (cPresent[c] > 1) sc++;
             return { achieved: false, text: (treeDone ? "Fine-tuning population inside split counties" : "Evening out population, splitting as few counties as possible") + ": " + sc + " count" + (sc === 1 ? "y" : "ies") + " split so far, largest district ±" + (worstDev() * 100).toFixed(3) + "% off" };
           }
-          return { achieved: false, text: "Balancing population: largest district is ±" + (worstDev() * 100).toFixed(3) + "% off (target ±" + (userTol * 100).toFixed(3) + "%)" + (stuckRounds ? "; still going (round " + (stuckRounds + 1) + ")" : "") };
+          // tight targets read better in people
+          const off = userTol * ideal < 50
+            ? Math.ceil(worstDev() * ideal - 1e-6).toLocaleString("en-US") + " people off (target: within " + (userTol * ideal <= 1 + 1e-6 ? "1 person" : Math.floor(userTol * ideal) + " people") + ")"
+            : "±" + (worstDev() * 100).toFixed(3) + "% off (target ±" + (userTol * 100).toFixed(3) + "%)";
+          return { achieved: false, text: "Balancing population: largest district is " + off + (stuckRounds ? "; still going (round " + (stuckRounds + 1) + ")" : "") };
         }
         if (isMax) {
           const party = mode === "maxD" ? "Democratic" : "Republican", need = Math.min(k, maxTarget);
