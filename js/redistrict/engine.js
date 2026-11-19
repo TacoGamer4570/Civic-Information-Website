@@ -158,7 +158,8 @@
       // aim for a rough balance (strictPop false: precincts, whole counties) keep the
       // tolerance they were given; the block stages enforce the exact target.
       const exactPop = !!opts.exactPop && opts.strictPop !== false;
-      const userTol = exactPop ? 1 / ideal : opts.tol == null ? 0.005 : opts.tol;
+      // deviation of -1, 0 or +1 person as shown (rounded): under 1.5 people from the ideal
+      const userTol = exactPop ? 1.499 / ideal : opts.tol == null ? 0.005 : opts.tol;
       let tol = userTol, lo = 0, hi = 0;
       function setTol(t) { tol = t; lo = ideal * (1 - t); hi = ideal * (1 + t); }
       setTol(userTol);

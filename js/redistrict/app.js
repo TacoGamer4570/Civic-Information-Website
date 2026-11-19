@@ -242,7 +242,7 @@
       endless: el.superOn.checked,
       // exact: every district within 1 person of the ideal (the ideal is rarely a whole
       // number, so in practice each district is the ideal rounded down or up)
-      tol: el.tol.value === "exact" ? 1 / (S.D.pop / k) : +el.tol.value,
+      tol: el.tol.value === "exact" ? 1.499 / (S.D.pop / k) : +el.tol.value,
       exactPop: el.tol.value === "exact",
       targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" || m === "proportional" ? 0 : +el.margin.value,
@@ -584,7 +584,7 @@
     }
     const range = r.maxPop - r.minPop;
     const offPeople = r.maxDev * r.ideal;
-    tiles.push(tile("Population", S.opts.exactPop ? (offPeople <= 1 + 1e-6 ? "Exact" : "±" + fmt(Math.ceil(offPeople - 1e-6)) + " people") : "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
+    tiles.push(tile("Population", S.opts.exactPop ? (offPeople < 1.5 ? "Exact" : "±" + fmt(Math.ceil(offPeople - 1e-6)) + " people") : "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
       "Largest and smallest districts differ by " + fmt(range) + " " + (Math.round(range) === 1 ? "person" : "people") + ". Ideal: " + fmt(r.ideal) + ".", r.maxDev <= r.userTol + 1e-9 ? "" : "is-warn"));
     tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
     if (r.splitCounties != null) {
