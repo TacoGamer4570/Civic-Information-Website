@@ -71,7 +71,7 @@
       }
       // mass: which land mass (connected over land borders) each unit is on, if known
       const mass = d.mass ? Int32Array.from(d.mass) : null;
-      return { n, E, eu, ev, elen, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county, nc, mass };
+      return { n, E, eu, ev, elen, econn, start, nbr, nlen, nconn, border, pop, dem, rep, area, county, nc, mass, countyLinks: d.countyLinks || null };
     }
 
     // Merge units into groups (e.g. blocks -> precincts). label[u] = group id (any ints >= 0).
@@ -164,6 +164,11 @@
       // block stage finishes the job.
       const strictPop = opts.strictPop !== false;
       let forceSkip = false, stuckRounds = 0, lockDropped = false;
+      // Required county mode: countyLock caps the county pieces (splits) at splitCap,
+      // so no move may split another county; countyTree first evens out population
+      // splitting as few counties as it can (see treeStep).
+      const countyLockOn = !!opts.countyLock, countyTreeOn = !!opts.countyTree;
+      let splitCap = Infinity, extraSplits = 0;
 
       // partisan requirements: top `needD` districts must be >= 50%+h for Dems,
       // bottom `needR` must be <= 50%-h. Max modes raise the requirement step by step.
@@ -407,6 +412,7 @@
       let phaseIdx = -1;
 
       function lockOk() {
+        if (countyLockOn && splits > splitCap) return false;
         if (!lock) return true;
         if (lock.tiers) {
           for (let j = 0; j < nTier; j++) if (lock.tiers[j] >= 0 && cntTier[j] < lock.tiers[j]) return false;
@@ -769,19 +775,299 @@
         moveCountyRaw(u, B, A);
         return false;
       }
+      // ----- county-aware balancing (required county mode) -----
+      // Link the districts in a spanning tree (preferring pairs that already share a
+      // split county), then, from the leaves up, move each district's surplus or
+      // shortfall across its tree link: first inside a county the two already share,
+      // then by moving whole counties, and only if that's not enough by splitting
+      // one county. That is at most one new split per link.
+      let treeDone = false, tree = null, cStart = null, cUnits = null, cTot = null;
+      const treeLog = opts.debugTree ? [] : null;
+      function countyIndex() {
+        cStart = new Int32Array(nc + 1); cTot = new Float64Array(nc);
+        for (let u = 0; u < n; u++) { cStart[county[u] + 1]++; cTot[county[u]] += pop[u]; }
+        for (let c = 0; c < nc; c++) cStart[c + 1] += cStart[c];
+        cUnits = new Int32Array(n);
+        const fill = cStart.slice(0, nc);
+        for (let u = 0; u < n; u++) cUnits[fill[county[u]]++] = u;
+      }
+      function treeSetup() {
+        countyIndex();
+        const pairs = new Map();
+        for (let e = 0; e < E; e++) {
+          if (econn[e] !== 1) continue; // districts that only meet across water can't trade over land
+          const a = assign[eu[e]], b = assign[ev[e]];
+          if (a === b) continue;
+          const key = a < b ? a * k + b : b * k + a;
+          if (pairs.has(key)) continue;
+          let shared = false;
+          for (let c = 0; c < nc && !shared; c++) if (cd[c * k + a] > 0 && cd[c * k + b] > 0) shared = true;
+          pairs.set(key, (shared ? 0 : 1) + 0.5 * rand());
+        }
+        const edges = [...pairs].sort((x, y) => x[1] - y[1]);
+        const par = new Int32Array(k); for (let d = 0; d < k; d++) par[d] = d;
+        const f = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+        const tadj = Array.from({ length: k }, () => []);
+        for (const [key] of edges) {
+          const a = Math.floor(key / k), b = key % k, ra = f(a), rb = f(b);
+          if (ra !== rb) { par[ra] = rb; tadj[a].push(b); tadj[b].push(a); }
+        }
+        // children before parents
+        const order = [], seen = new Uint8Array(k);
+        for (let r = 0; r < k; r++) {
+          if (seen[r]) continue;
+          const st = [[r, -1, 0]]; seen[r] = 1;
+          while (st.length) {
+            const top = st[st.length - 1];
+            if (top[2] < tadj[top[0]].length) {
+              const y = tadj[top[0]][top[2]++];
+              if (!seen[y]) { seen[y] = 1; st.push([y, top[0], 0]); }
+            } else { st.pop(); if (top[1] >= 0) order.push([top[0], top[1]]); }
+          }
+        }
+        tree = { order, i: 0, task: null, pass: tree ? tree.pass + 1 : 1, startDev: worstDev() };
+      }
+      // counties along the G-R border, with the side they sit on
+      function borderCounties(G, R, bad, bad2) {
+        const out = new Set();
+        for (let e = 0; e < E; e++) {
+          if (econn[e] !== 1) continue;
+          const a = assign[eu[e]], b = assign[ev[e]];
+          if (a === G && b === R) out.add(county[eu[e]]);
+          else if (a === R && b === G) out.add(county[ev[e]]);
+        }
+        for (const c of bad) out.delete(c);
+        if (bad2) for (const c of bad2) out.delete(c);
+        return [...out];
+      }
+      function pickCounty(t, remaining, slack) {
+        const cs = borderCounties(t.G, t.R, t.bad);
+        const csWhole = cs.filter((c) => !t.badWhole.has(c));
+        // 1. a county the two districts already share: no new split
+        let best = -1;
+        for (const c of cs) if (cd[c * k + t.R] > 0 && (best < 0 || cd[c * k + t.G] > cd[best * k + t.G])) best = c;
+        if (best >= 0) { t.whole = false; return best; }
+        // 2. a whole county of the giver that fits: moving it splits nothing
+        for (const c of csWhole) if (cPresent[c] === 1 && cTot[c] <= remaining + slack && (best < 0 || cTot[c] > cTot[best])) best = c;
+        if (best >= 0) { t.whole = true; return best; }
+        // 3. a county the giver already shares with another district (no new county split)
+        for (const c of cs) if (cPresent[c] > 1) { t.whole = false; return c; }
+        // 4. split one county: the smallest that covers what's needed
+        for (const c of cs) if (best < 0 || (cTot[c] >= remaining ? (cTot[best] < remaining || cTot[c] < cTot[best]) : cTot[c] > cTot[best])) best = c;
+        t.whole = false;
+        return best;
+      }
+      // (its own queue: moveUnit's connectivity checks reuse the shared scratch arrays)
+      function moveWholeCounty(c, G, R) {
+        const moved = [], q = [], inQ = new Set();
+        for (let i = cStart[c]; i < cStart[c + 1]; i++) {
+          const u = cUnits[i];
+          if (assign[u] !== G) return false;
+          for (let j = start[u]; j < start[u + 1]; j++) if (nconn[j] && assign[nbr[j]] === R) { inQ.add(u); q.push(u); break; }
+        }
+        // units that can't go yet (they'd cut the giver) are retried once others have moved
+        let progress = true;
+        while (progress) {
+          progress = false;
+          for (let qi = 0; qi < q.length; qi++) {
+            const u = q[qi];
+            if (assign[u] !== G) continue;
+            if (!moveUnit(u, R)) continue;
+            moved.push(u); progress = true;
+            for (let j = start[u]; j < start[u + 1]; j++) {
+              const y = nbr[j];
+              if (nconn[j] && county[y] === c && assign[y] === G && !inQ.has(y)) { inQ.add(y); q.push(y); }
+            }
+          }
+        }
+        if (moved.length === cStart[c + 1] - cStart[c]) return true;
+        if (treeLog) treeLog.push({ whole: c, units: cStart[c + 1] - cStart[c], reached: q.length, moved: moved.length, why: moveFail });
+        // couldn't move it all in one piece: put it back
+        for (let i = moved.length - 1; i >= 0; i--) moveUnit(moved[i], G);
+        return false;
+      }
+      // Move u from G to R together with any small pieces of G that hang on G only
+      // through u (moving u alone would strand them). Both districts are checked
+      // afterwards and the move is undone if either is no longer properly connected.
+      function forceMove(u, B) {
+        const A = assign[u];
+        let inA = 0, inB = 0;
+        for (let j = start[u]; j < start[u + 1]; j++) { const a = assign[nbr[j]]; if (a === A) inA += nlen[j]; else if (a === B) inB += nlen[j]; }
+        setStats(A, dPop[A] - pop[u], dDem[A] - dem[u], dRep[A] - rep[u], dArea[A] - area[u], dPerim[A] - border[u] + 2 * inA, dCnt[A] - 1);
+        setStats(B, dPop[B] + pop[u], dDem[B] + dem[u], dRep[B] + rep[u], dArea[B] + area[u], dPerim[B] + border[u] - 2 * inB, dCnt[B] + 1);
+        moveCounty(u, A, B); assign[u] = B;
+        refresh(A); refresh(B);
+      }
+      function districtOk(d) {
+        let s0 = -1;
+        for (let u = 0; u < n && s0 < 0; u++) if (assign[u] === d) s0 = u;
+        if (s0 < 0) return false;
+        const seen = new Uint8Array(n), q = [s0]; seen[s0] = 1;
+        let cnt = 0;
+        while (q.length) { const x = q.pop(); cnt++; for (let j = start[x]; j < start[x + 1]; j++) { const y = nbr[j]; if (nconn[j] && !seen[y] && assign[y] === d) { seen[y] = 1; q.push(y); } } }
+        if (cnt !== dCnt[d]) return false;
+        if (!massOn) return true;
+        // on each land mass, one piece over land
+        const seenL = new Uint8Array(n), massSeen = new Set();
+        for (let u = 0; u < n; u++) {
+          if (assign[u] !== d || seenL[u]) continue;
+          if (massSeen.has(mass[u])) return false;
+          massSeen.add(mass[u]);
+          const ql = [u]; seenL[u] = 1;
+          while (ql.length) { const x = ql.pop(); for (let j = start[x]; j < start[x + 1]; j++) { const y = nbr[j]; if (nconn[j] === 1 && !seenL[y] && assign[y] === d) { seenL[y] = 1; ql.push(y); } } }
+        }
+        return true;
+      }
+      function moveWithOrphans(u, G, R, maxUnits, maxPop) {
+        if (assign[u] !== G || !onBorder(u, R)) return 0;
+        const seen = new Set([u]), comps = [];
+        for (let j = start[u]; j < start[u + 1]; j++) {
+          const y = nbr[j];
+          if (!nconn[j] || assign[y] !== G || seen.has(y)) continue;
+          const comp = [y]; seen.add(y);
+          for (let i = 0; i < comp.length && comp.length <= maxUnits; i++) {
+            const x = comp[i];
+            for (let jj = start[x]; jj < start[x + 1]; jj++) { const z = nbr[jj]; if (nconn[jj] && assign[z] === G && !seen.has(z)) { seen.add(z); comp.push(z); } }
+          }
+          comps.push(comp);
+        }
+        const bigOnes = comps.filter((c) => c.length > maxUnits);
+        if (bigOnes.length !== 1) return 0;
+        const orphans = [u];
+        for (const c of comps) if (c.length <= maxUnits) for (const x of c) orphans.push(x);
+        let p = 0;
+        for (const x of orphans) p += pop[x];
+        if (p > maxPop) return 0;
+        for (const x of orphans) forceMove(x, R);
+        if (districtOk(G) && districtOk(R)) return orphans.length;
+        for (let i = orphans.length - 1; i >= 0; i--) forceMove(orphans[i], G);
+        return 0;
+      }
+      // move one block of county t.county from the giver to the receiver: the
+      // biggest that still fits, along the border between them
+      function moveOneBlock(t, remaining, slack) {
+        const c = t.county, G = t.G, R = t.R;
+        if (!t.frontier) {
+          t.frontier = new Set(); t.failed = new Set(); t.zero = 0;
+          for (let i = cStart[c]; i < cStart[c + 1]; i++) { const u = cUnits[i]; if (assign[u] === G && onBorder(u, R)) t.frontier.add(u); }
+        }
+        const cands = [];
+        for (const u of t.frontier) {
+          if (assign[u] !== G) { t.frontier.delete(u); continue; }
+          if (!t.failed.has(u) && pop[u] <= remaining + slack) cands.push(u);
+        }
+        // populated blocks first (biggest first), then empty ones (they open the way)
+        cands.sort((a, b) => (pop[b] > 0) - (pop[a] > 0) || pop[b] - pop[a]);
+        for (let i = 0; i < Math.min(60, cands.length); i++) {
+          const u = cands[i];
+          if (pop[u] === 0 && t.zero > 2000) return false;
+          if (!moveUnit(u, R)) {
+            // it would strand a few blocks behind it: take them along
+            if (!(moveFail.startsWith("would cut") && moveWithOrphans(u, G, R, 2000, remaining + slack))) { t.failed.add(u); if (treeLog) t.why = (t.why || "") + moveFail[0]; continue; }
+          }
+          t.frontier.delete(u); t.failed.clear();
+          t.zero = pop[u] > 0 ? 0 : t.zero + 1;
+          for (let j = start[u]; j < start[u + 1]; j++) {
+            const y = nbr[j];
+            if (nconn[j] && county[y] === c && assign[y] === G) t.frontier.add(y);
+          }
+          return true;
+        }
+        return false;
+      }
+      // Required county mode, last step: a county split by only a small piece (up to
+      // the population tolerance) is made whole again where the piece can join the
+      // district holding the rest of it. Final balancing then evens out the people moved.
+      let tidied = false;
+      function tidySplits() {
+        if (!cStart) countyIndex();
+        const maxPiece = Math.max(tol * ideal, 200);
+        let fixed = 0;
+        searchCap = 60000;
+        try {
+          for (let c = 0; c < nc; c++) {
+            if (cPresent[c] <= 1) continue;
+            const pp = new Map();
+            for (let i = cStart[c]; i < cStart[c + 1]; i++) { const u = cUnits[i]; pp.set(assign[u], (pp.get(assign[u]) || 0) + pop[u]); }
+            const byPop = [...pp].sort((x, y) => y[1] - x[1]);
+            const main = byPop[0][0];
+            for (const [d, pd] of byPop.slice(1)) {
+              if (pd > maxPiece) continue;
+              const units = [];
+              for (let i = cStart[c]; i < cStart[c + 1]; i++) if (assign[cUnits[i]] === d) units.push(cUnits[i]);
+              const moved = [];
+              let progress = true;
+              while (progress) {
+                progress = false;
+                for (const u of units) if (assign[u] === d && moveUnit(u, main)) { moved.push(u); progress = true; }
+              }
+              if (moved.length === units.length) fixed++;
+              else {
+                if (treeLog) treeLog.push({ tidy: c, people: pd, units: units.length, moved: moved.length, why: moveFail, touchesMain: units.some((u) => onBorder(u, main)) });
+                for (let i = moved.length - 1; i >= 0; i--) moveUnit(moved[i], d);
+              }
+            }
+          }
+        } finally { searchCap = SEARCH_CAP; }
+        if (fixed) {
+          tidied = true;
+          splitCap = Math.min(splitCap, splits);
+          notes.push("Made " + fixed + " count" + (fixed === 1 ? "y" : "ies") + " whole again that had only a small piece in another district.");
+          recomputePen(); if (fairOn) curFair = fairness(); partE = partisanE(); curE = energy();
+        }
+      }
+      // one step of the tree balancing; false when every link is done
+      function treeStep() {
+        searchCap = 60000;
+        try { return treeStep1(); } finally { searchCap = SEARCH_CAP; }
+      }
+      function treeStep1() {
+        if (!tree) treeSetup();
+        const slack = tol * ideal * 0.5;
+        for (let guard = 0; guard < 4 * k + 8; guard++) {
+          if (!tree.task) {
+            if (tree.i >= tree.order.length) {
+              // not even yet: another pass with a fresh tree, while passes keep helping
+              const w = worstDev();
+              if (w <= tol || tree.pass >= 10 || w > tree.startDev * 0.98) return false;
+              treeSetup();
+              continue;
+            }
+            const [A, P] = tree.order[tree.i++];
+            const f = dPop[A] - ideal;
+            if (Math.abs(f) <= slack) continue;
+            tree.task = { child: A, sign: f > 0 ? 1 : -1, G: f > 0 ? A : P, R: f > 0 ? P : A, county: -1, whole: false, frontier: null, bad: new Set(), badWhole: new Set() };
+          }
+          const t = tree.task;
+          const remaining = t.sign * (dPop[t.child] - ideal);
+          if (remaining <= slack) { tree.task = null; continue; }
+          if (t.county < 0) {
+            t.county = pickCounty(t, remaining, slack); t.frontier = null;
+            if (treeLog) treeLog.push({ G: t.G, R: t.R, remaining: Math.round(remaining), county: t.county, whole: t.whole, shared: t.county >= 0 && cd[t.county * k + t.R] > 0, cPop: t.county >= 0 ? cTot[t.county] : 0 });
+            if (t.county < 0) { tree.task = null; continue; } // nothing left to try here; normal balancing takes over
+          }
+          if (t.whole) { const ok = moveWholeCounty(t.county, t.G, t.R); if (treeLog) treeLog[treeLog.length - 1].result = ok ? "moved whole" : "whole failed"; if (!ok) t.badWhole.add(t.county); t.county = -1; return true; }
+          if (!moveOneBlock(t, remaining, slack)) { if (treeLog) treeLog[treeLog.length - 1].result = "blocks stopped, " + Math.round(remaining) + " left, frontier " + (t.frontier ? t.frontier.size : 0) + " fails " + (t.why || "").slice(-80); t.why = ""; t.bad.add(t.county); t.county = -1; }
+          return true;
+        }
+        return true;
+      }
+
       // ----- swap move (fine population balancing) -----
       // Trade a unit from A to B and a unit from B back to A in one step, so the net
       // change can be a handful of people even where every border unit holds hundreds
       // (no single flip can get a district within a tight tolerance there).
+      let moveFail = "";
       function moveUnit(u, B) {
         const A = assign[u];
-        if (A === B || dCnt[A] <= 1) return null;
+        if (A === B || dCnt[A] <= 1) { moveFail = "same/last"; return null; }
         let touches = false;
         for (let j = start[u]; j < start[u + 1]; j++) if (nconn[j] && assign[nbr[j]] === B) { touches = true; break; }
-        if (!touches || !stillConnectedWithout(u, A)) return null;
+        if (!touches) { moveFail = "not touching"; return null; }
+        if (!stillConnectedWithout(u, A)) { moveFail = "would cut the giver"; return null; }
         if (massOn) {
-          if (dm[mass[u] * k + B] > 0 && !touchesByLand(u, B)) return null;
-          if (!stillConnectedWithout(u, A, true)) return null;
+          if (dm[mass[u] * k + B] > 0 && !touchesByLand(u, B)) { moveFail = "only a water link"; return null; }
+          if (!stillConnectedWithout(u, A, true)) { moveFail = "would cut the giver on land"; return null; }
         }
         let inA = 0, inB = 0;
         for (let j = start[u]; j < start[u + 1]; j++) {
@@ -897,10 +1183,12 @@
           }
           // Give up (reject the move) if the pieces don't reconnect nearby. Always
           // safe: it can only turn down a rare valid move, never allow a split.
-          if (qt > SEARCH_CAP) return false;
+          if (qt > searchCap) return false;
         }
         return false;
       }
+      // the county transfers below are few and deliberate, so they may look much further
+      let searchCap = SEARCH_CAP;
 
       function accept(dE) {
         proposals++;
@@ -939,6 +1227,7 @@
           T0 = tune.polishT0; T1 = tune.polishT1; phaseBudget = polishBudget; recomProb = tune.polishRecom;
           if ((!lock || (fairOn && lock.fair == null)) && mode !== "neutral") lock = currentLock();
         } else if (p === "final") {
+          if (countyLockOn && !countyTreeOn) tidySplits();
           wPart = fairOn ? tune.polishFair : 0; wComp = compact ? 1 : 0; wCty = wCounty;
           if ((!lock || (fairOn && lock.fair == null)) && mode !== "neutral") lock = currentLock();
           T0 = T1 = 1e-4; phaseBudget = Math.max(30000, 4 * n, 2000 * k); recomProb = 0;
@@ -957,7 +1246,8 @@
         if (phaseIdx >= phases.length) { finishAll(); return; }
         const p = phases[phaseIdx];
         enterPhase(p);
-        if (p === "final") best = keep;
+        // (after a county tidy-up the earlier best map would undo it)
+        if (p === "final" && !tidied) best = keep;
       }
       function finishAll() {
         if (phase === "polish" && best) restore(best.assign);
@@ -1001,6 +1291,7 @@
           if (mass) repairContiguity();
         }
         recomputeAll();
+        if (countyLockOn) splitCap = Math.max(splits, opts.splitCap || 0);
         if (opts.lockFromStart && mode !== "neutral") lock = currentLock();
         if (mode === "neutral" && !opts.goal) goal = { achieved: true, text: compact ? "No partisan goal: equal-population, compact districts" : "No partisan goal: equal-population districts, shapes left as they fall" };
         if (worstDev() > userTol) enterPhase("balance");
@@ -1011,7 +1302,13 @@
         stepCount++; phaseStep++;
         const frac = Math.min(1, phaseStep / phaseBudget);
         T = T0 * Math.pow(T1 / T0, frac);
-        if (rand() < recomProb) recomMove();
+        if (phase === "balance" && countyTreeOn && !treeDone) {
+          if (!treeStep()) { treeDone = true; phaseStep = 0; }
+          if (splits > splitCap) splitCap = splits;
+          if (fairOn) curFair = fairness();
+          partE = partisanE(); curE = energy();
+        }
+        else if (rand() < recomProb) recomMove();
         else if ((phase === "balance" || phase === "final") && rand() < (stuckRounds ? 0.6 : 0.3)) swapMove();
         else flipMove();
         if ((stepCount & 0xffff) === 0) resync();
@@ -1019,7 +1316,7 @@
 
         if (phase === "balance") {
           if (check && popOk()) { nextPhase(); return; }
-          if (phaseStep >= phaseBudget) {
+          if (phaseStep >= phaseBudget && (treeDone || !countyTreeOn || forceSkip)) {
             if (strictPop && !forceSkip) { keepBalancing(); return; }
             const w = worstDev();
             notes.push("Couldn't reach ±" + (userTol * 100).toFixed(2) + "% population balance with whole " + unitName + "s; best was ±" + (w * 100).toFixed(3) + "%.");
@@ -1093,6 +1390,12 @@
         // let tiny population fixes win over shape while it's stuck
         if (phase === "balance" && wComp > 0) { wComp = Math.max(0.01, wComp * 0.5); curE = energy(); }
         if (lock && stuckRounds >= 2) relaxLock();
+        if (countyLockOn && stuckRounds >= 2 && splits >= splitCap) {
+          splitCap++; extraSplits++;
+          const i = notes.findIndex((x) => x.startsWith("Population couldn't be evened out"));
+          const msg = "Population couldn't be evened out with the counties already split, so " + extraSplits + " more county piece" + (extraSplits === 1 ? " was" : "s were") + " allowed.";
+          if (i >= 0) notes[i] = msg; else notes.push(msg);
+        }
       }
       function relaxLock() {
         if (stuckRounds >= 5) {
@@ -1251,6 +1554,11 @@
       function progressGoal() {
         if (phase !== "search") {
           if (phase !== "balance") return { achieved: false, text: goal.text };
+          if (countyTreeOn) {
+            let sc = 0;
+            for (let c = 0; c < nc; c++) if (cPresent[c] > 1) sc++;
+            return { achieved: false, text: (treeDone ? "Fine-tuning population inside split counties" : "Evening out population, splitting as few counties as possible") + ": " + sc + " count" + (sc === 1 ? "y" : "ies") + " split so far, largest district ±" + (worstDev() * 100).toFixed(3) + "% off" };
+          }
           return { achieved: false, text: "Balancing population: largest district is ±" + (worstDev() * 100).toFixed(3) + "% off (target ±" + (userTol * 100).toFixed(3) + "%)" + (stuckRounds ? "; still going (round " + (stuckRounds + 1) + ")" : "") };
         }
         if (isMax) {
@@ -1294,7 +1602,22 @@
         },
         report,
         verifyContiguity,
-        _debug: { recomputeAll, dPop, dPerim, dArea, energy, get curE() { return curE; }, get splits() { return splits; }, get compSum() { return compSum; } },
+        _debug: {
+          // components of district A without unit u (full search), for debugging
+          cutCheck(u) {
+            const A = assign[u], seen = new Uint8Array(n); seen[u] = 1;
+            const comps = [];
+            for (let j = start[u]; j < start[u + 1]; j++) {
+              const y = nbr[j];
+              if (!nconn[j] || assign[y] !== A || seen[y]) continue;
+              let size = 0; const q = [y]; seen[y] = 1;
+              while (q.length) { const x = q.pop(); size++; for (let i = start[x]; i < start[x + 1]; i++) { const z = nbr[i]; if (nconn[i] && assign[z] === A && !seen[z]) { seen[z] = 1; q.push(z); } } }
+              comps.push(size);
+            }
+            return { A, dCnt: dCnt[A], comps };
+          },
+          get frontierDebug() { return tree && tree.task ? { G: tree.task.G, R: tree.task.R, county: tree.task.county, failed: tree.task.failed ? [...tree.task.failed] : [] } : null; },
+          treeLog, recomputeAll, dPop, dPerim, dArea, energy, get curE() { return curE; }, get splits() { return splits; }, get compSum() { return compSum; } },
       };
     }
 
@@ -1302,6 +1625,7 @@
     // fine: block graph; group: precinct id per block; opts as in createEngine plus
     // coarsePolishSteps / finePolishSteps.
     function createPipeline(fine, group, opts) {
+      if (opts.countyRequired) return createCountyPipeline(fine, group, opts);
       const rand = makeRng(opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed);
       const k = opts.k | 0;
       const agg = group ? aggregate(fine, group) : null;
@@ -1386,6 +1710,175 @@
       };
     }
 
+    // ---------- required county mode: split the fewest counties, then whole-county edits ----------
+    // 1. "county": whole counties are the units (counties bigger than a district,
+    //    which must be split anyway, use their precinct pieces); the goal is chased here.
+    // 2. "split": on census blocks, even out population splitting as few counties as
+    //    possible (createEngine's countyTree), with no other county ever split.
+    // 3. "refine": unsplit counties become single units that can only move whole;
+    //    split counties are their precincts. The goal and compactness are refined
+    //    with the split count capped (it can only go down).
+    // 4. "block": census blocks again, seat result and split cap locked: population
+    //    is evened out exactly and borders smoothed inside the split counties.
+    function createCountyPipeline(fine0, group, opts) {
+      const rand = makeRng(opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed);
+      // A county is always connected to itself: a thin strip inside one county
+      // (a road or rail strip joining two parts of it) counts as a connection here.
+      // Corridors through other counties still don't count.
+      const fine = (() => {
+        const links = opts.countyLinks || fine0.countyLinks;
+        if (!links || !links.length) return fine0;
+        const econn = Uint8Array.from(fine0.econn);
+        for (let i = 0; i < links.length; i++) econn[links[i]] = 1;
+        const n0 = fine0.n, ext = new Float64Array(n0);
+        for (let u = 0; u < n0; u++) { let b = fine0.border[u]; for (let j = fine0.start[u]; j < fine0.start[u + 1]; j++) b -= fine0.nlen[j]; ext[u] = b; }
+        // land masses again, with those links
+        const pm = new Int32Array(n0); for (let u = 0; u < n0; u++) pm[u] = u;
+        const fm = (x) => { while (pm[x] !== x) { pm[x] = pm[pm[x]]; x = pm[x]; } return x; };
+        for (let e = 0; e < fine0.E; e++) if (econn[e] === 1) { const a = fm(fine0.eu[e]), b = fm(fine0.ev[e]); if (a !== b) pm[a] = b; }
+        const ids = new Map(), mass = new Int32Array(n0);
+        for (let u = 0; u < n0; u++) { const r = fm(u); let id = ids.get(r); if (id === undefined) { id = ids.size; ids.set(r, id); } mass[u] = id; }
+        return buildGraph({ n: n0, pop: fine0.pop, dem: fine0.dem, rep: fine0.rep, area: fine0.area, ext, county: fine0.county, eu: fine0.eu, ev: fine0.ev, elen: fine0.elen, econn, mass });
+      })();
+      const k = opts.k | 0, n = fine.n;
+      const neutral = (opts.mode || "neutral") === "neutral";
+      const userTol = opts.tol == null ? 0.005 : opts.tol;
+      let total = 0;
+      for (let u = 0; u < n; u++) total += fine.pop[u];
+      const ideal = total / k;
+      // county pieces: the land-connected parts of each county
+      const par = new Int32Array(n); for (let u = 0; u < n; u++) par[u] = u;
+      const f = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+      for (let e = 0; e < fine.E; e++) if (fine.econn[e] === 1 && fine.county[fine.eu[e]] === fine.county[fine.ev[e]]) { const a = f(fine.eu[e]), b = f(fine.ev[e]); if (a !== b) par[a] = b; }
+      const piece = new Int32Array(n); for (let u = 0; u < n; u++) piece[u] = f(u);
+      const cPop = new Float64Array(fine.nc);
+      for (let u = 0; u < n; u++) cPop[fine.county[u]] += fine.pop[u];
+      const big = new Uint8Array(fine.nc);
+      let forced = 0;
+      for (let c = 0; c < fine.nc; c++) if (cPop[c] > ideal * (1 + userTol)) { big[c] = 1; forced++; }
+      const labelA = new Float64Array(n);
+      // whole counties (a county split by a river or a road strip is still one unit here;
+      // the block stage sorts out its land connections)
+      for (let u = 0; u < n; u++) labelA[u] = big[fine.county[u]] && group ? n + group[u] : 2 * n + fine.county[u];
+      const aggA = aggregate(fine, labelA);
+      // whole counties are lumpy: they only aim for a loose balance here (the split
+      // stage evens it out exactly, and a looser start leaves the goal search more room)
+      const meanUnit = total / aggA.graph.n;
+      const tolA = Math.min(0.1, Math.max(userTol, 0.01, 2 * meanUnit / ideal));
+      // same block-level settings as the normal pipeline (ReCom on blocks only when districts are small)
+      const smallDistricts = n / k < 2000;
+      const fineTune = Object.assign({
+        balanceRecom: smallDistricts ? 0.3 : 0, balanceT0: 0.003, balanceT1: 0.0003,
+        polishRecom: smallDistricts ? 0.02 : 0, polishT0: 0.003, polishT1: 0.0002, popW0: 300,
+      }, opts.tune && opts.tune.fine);
+      let stage, engA = null, engB = null, engC = null, engD = null, aggC = null;
+      const blockAssign = new Int32Array(n);
+      function project(groupOf, m, sa) {
+        const best = new Int32Array(m).fill(-1), bestW = new Float64Array(m).fill(-1), acc = new Map();
+        for (let u = 0; u < n; u++) {
+          const key = groupOf[u] * k + sa[u], w = (acc.get(key) || 0) + fine.pop[u] + 1e-3;
+          acc.set(key, w);
+          if (w > bestW[groupOf[u]]) { bestW[groupOf[u]] = w; best[groupOf[u]] = sa[u]; }
+        }
+        return best;
+      }
+      function init() {
+        engA = createEngine(aggA.graph, Object.assign({}, opts, {
+          rand, tol: tolA, strictPop: false, unitName: "county",
+          initialAssign: opts.startAssign ? project(aggA.groupOf, aggA.graph.n, opts.startAssign) : null,
+          phases: neutral ? ["polish"] : ["search", "polish"],
+          polishSteps: Math.max(20000, Math.round((opts.coarsePolishSteps || 40000) / 4)),
+          tune: Object.assign({}, opts.tune && opts.tune.coarse),
+        }));
+        engA.init();
+        stage = "county";
+      }
+      function startSplit() {
+        const ga = engA.assign, gof = aggA.groupOf;
+        for (let u = 0; u < n; u++) blockAssign[u] = ga[gof[u]];
+        engB = createEngine(fine, Object.assign({}, opts, {
+          rand, initialAssign: Int32Array.from(blockAssign), goal: engA.goal, unitName: "block",
+          countyLock: true, countyTree: true, phases: [], tune: fineTune,
+        }));
+        engB.init();
+        stage = "split";
+      }
+      function startRefine() {
+        // split counties keep their blocks; every other county piece is one unit
+        const a = engB.assign, seen = new Int32Array(fine.nc).fill(-1), split = new Uint8Array(fine.nc);
+        for (let u = 0; u < n; u++) { const c = fine.county[u]; if (seen[c] < 0) seen[c] = a[u]; else if (seen[c] !== a[u]) split[c] = 1; }
+        const labelC = new Float64Array(n);
+        for (let u = 0; u < n; u++) labelC[u] = split[fine.county[u]] ? (group ? group[u] : u) : 2 * n + piece[u];
+        aggC = aggregate(fine, labelC);
+        const init0 = project(aggC.groupOf, aggC.graph.n, a);
+        const r = engB.report(false);
+        let pp = 0, np2 = 0;
+        for (let u = 0; u < aggC.graph.n; u++) { pp += aggC.graph.pop[u]; np2++; }
+        const tolC = Math.min(0.05, Math.max(userTol, 0.005, 2 * (pp / np2) / ideal));
+        engC = createEngine(aggC.graph, Object.assign({}, opts, {
+          rand, initialAssign: init0, goal: engA.goal, unitName: "precinct", countyLock: true, splitCap: 0,
+          tol: tolC, strictPop: false, countyWeight: Math.max(1, opts.countyWeight || 0),
+          phases: neutral ? ["polish"] : ["search", "polish"], polishSteps: opts.coarsePolishSteps,
+          tune: Object.assign({}, opts.tune && opts.tune.coarse),
+        }));
+        engC.init();
+        notesB = r.notes.filter((x) => !/^Reconnected/.test(x));
+        stage = "refine";
+      }
+      function startBlocks() {
+        const gc = engC.assign, gof = aggC.groupOf, init1 = new Int32Array(n);
+        for (let u = 0; u < n; u++) init1[u] = gc[gof[u]];
+        notesC = engC.report(false).notes.filter((x) => !/^(Reconnected|Couldn't reach)/.test(x));
+        engD = createEngine(fine, Object.assign({}, opts, {
+          rand, initialAssign: init1, goal: engC.goal, unitName: "block", lockFromStart: true, countyLock: true,
+          countyWeight: Math.max(1, opts.countyWeight || 0),
+          phases: ["polish", "final"], polishSteps: opts.finePolishSteps, tune: fineTune,
+        }));
+        engD.init();
+        stage = "block";
+      }
+      let notesC = [];
+      let notesB = [];
+      function current() { return stage === "county" ? engA : stage === "split" ? engB : stage === "refine" ? engC : engD; }
+      function advance() {
+        if (stage === "county" && engA.phase === "done") startSplit();
+        if (stage === "split" && engB.phase === "done") startRefine();
+        if (stage === "refine" && engC.phase === "done") startBlocks();
+      }
+      function assignment() {
+        if (stage === "county") { const ga = engA.assign, gof = aggA.groupOf; for (let u = 0; u < n; u++) blockAssign[u] = ga[gof[u]]; return blockAssign; }
+        if (stage === "split") return engB.assign;
+        if (stage === "block") return engD.assign;
+        const gc = engC.assign, gof = aggC.groupOf;
+        for (let u = 0; u < n; u++) blockAssign[u] = gc[gof[u]];
+        return blockAssign;
+      }
+      return {
+        init,
+        get stage() { return stage; },
+        get phase() { return stage === "block" && engD.phase === "done" ? "done" : current().phase; },
+        useCoarse: true,
+        get _engines() { return { engA, engB, engC, engD }; },
+        run(ms) { const done = current().run(ms); if (done) advance(); return this.phase === "done"; },
+        finishNow() { current().finishNow(); if (current().phase === "done") advance(); },
+        assignment,
+        report(full) {
+          const r = current().report(full);
+          r.stage = stage; r.useCoarse = true;
+          r.countyRequired = { forced, counties: fine.nc };
+          if (stage === "refine") r.notes = notesB.concat(r.notes);
+          if (stage === "block") r.notes = notesB.concat(notesC, r.notes);
+          // block counts per district (units here can be whole counties)
+          if (stage === "county" || stage === "refine") {
+            const a = assignment(), cnt = new Int32Array(k);
+            for (let u = 0; u < n; u++) cnt[a[u]]++;
+            for (const d of r.districts) d.units = cnt[d.id];
+          }
+          return r;
+        },
+      };
+    }
+
     // Decoded state arrays -> engine input. Block votes are the precinct's
     // 2024 votes split by each block's weight (voting-age population).
     //
@@ -1425,14 +1918,19 @@
       const thin = new Uint8Array(n);
       for (let u = 0; u < n; u++) if (!water[u] && per[u] > 0 && (200 * A.area[u]) / per[u] < THIN_M) thin[u] = 1;
       const cand = new Int32Array(n);
+      // a host in the sliver's own county wins over a longer border in another
+      // county, so slivers don't put bits of a county into a neighbor's district
+      const bestSame = new Uint8Array(n);
       function offer(x, y, len) {
         if (!thin[x] || host[x] >= 0) return;
         const hy = thin[y] ? host[y] : y;
-        if (hy >= 0 && len > bestLen[x]) { bestLen[x] = len; cand[x] = hy; }
+        if (hy < 0) return;
+        const same = A.county[hy] === A.county[x] ? 1 : 0;
+        if (same > bestSame[x] || (same === bestSame[x] && len > bestLen[x])) { bestLen[x] = len; cand[x] = hy; bestSame[x] = same; }
       }
       for (let pass = 0; pass < 50; pass++) {
         let changed = 0;
-        bestLen.fill(0); cand.fill(-1);
+        bestLen.fill(0); cand.fill(-1); bestSame.fill(0);
         for (let i = 0; i < E; i++) {
           const a = au[i], b = av[i], len = A.elen[i];
           if (!(len > 0) || water[a] || water[b] || (!thin[a] && !thin[b])) continue;
@@ -1459,11 +1957,14 @@
       const adj = new Int32Array(2 * E), fill = st.slice(0, n);
       for (let i = 0; i < E; i++) { adj[fill[au[i]]++] = av[i]; adj[fill[av[i]]++] = au[i]; }
       const q = new Int32Array(n);
-      let qh = 0, qt = 0;
-      for (let u = 0; u < n; u++) if (attach[u] >= 0) q[qt++] = u;
-      while (qh < qt) {
-        const u = q[qh++];
-        for (let j = st[u]; j < st[u + 1]; j++) { const w = adj[j]; if (attach[w] < 0) { attach[w] = attach[u]; q[qt++] = w; } }
+      // first within each county, then across county lines for what's left
+      for (const sameOnly of [true, false]) {
+        let qh = 0, qt = 0;
+        for (let u = 0; u < n; u++) if (attach[u] >= 0) q[qt++] = u;
+        while (qh < qt) {
+          const u = q[qh++];
+          for (let j = st[u]; j < st[u + 1]; j++) { const w = adj[j]; if (attach[w] < 0 && (!sameOnly || A.county[w] === A.county[u])) { attach[w] = attach[u]; q[qt++] = w; } }
+        }
       }
       for (let u = 0; u < n; u++) if (attach[u] < 0) attach[u] = 0;
       // Each land unit's shape includes the water attached to it, so compactness
@@ -1479,6 +1980,7 @@
       // edge kinds: 1 solid land border, 3 border through a sliver (settled below),
       // 2 link (zero-length island link), 0 water / shape only
       const RANK = [0, 3, 1, 2];
+      const inCounty = []; // sliver borders inside one county (required county mode counts them)
       const pairs = new Map(), lu = [], lv = [], ll = [], lc = [];
       function addEdge(a, b, len, c) {
         if (a === b) return;
@@ -1487,10 +1989,17 @@
         if (i === undefined) { pairs.set(key, lu.length); lu.push(Math.min(a, b)); lv.push(Math.max(a, b)); ll.push(len); lc.push(c); }
         else { ll[i] += len; if (RANK[c] > RANK[lc[i]]) lc[i] = c; }
       }
+      const sliverEdge = []; // [sliver block, unit-pair index] for borders through slivers
       for (let i = 0; i < E; i++) {
         const a = au[i], b = av[i];
         const land = !water[a] && !water[b];
-        addEdge(attach[a], attach[b], A.elen[i], !land ? 0 : !(A.elen[i] > 0) ? 2 : thin[a] || thin[b] ? 3 : 1);
+        const kind = !land ? 0 : !(A.elen[i] > 0) ? 2 : thin[a] || thin[b] ? 3 : 1;
+        addEdge(attach[a], attach[b], A.elen[i], kind);
+        if (kind === 3 && attach[a] !== attach[b]) {
+          const pi = pairs.get(attach[a] < attach[b] ? attach[a] * nl + attach[b] : attach[b] * nl + attach[a]);
+          if (thin[a]) sliverEdge.push(a, pi);
+          if (thin[b]) sliverEdge.push(b, pi);
+        }
       }
       const br = meta.landBridges || [];
       for (let i = 0; i < br.length; i += 2) {
@@ -1506,7 +2015,25 @@
         for (let i = 0; i < nl; i++) su[i] = i;
         const sf = (v) => { while (su[v] !== v) { su[v] = su[su[v]]; v = su[v]; } return v; };
         for (let i = 0; i < lu.length; i++) if (lc[i] === 1) { const ra = sf(lu[i]), rb = sf(lv[i]); if (ra !== rb) su[ra] = rb; }
-        for (let i = 0; i < lu.length; i++) if (lc[i] === 3) lc[i] = sf(lu[i]) !== sf(lv[i]) ? 1 : 0;
+        for (let i = 0; i < lu.length; i++) if (lc[i] === 3) {
+          if (sf(lu[i]) !== sf(lv[i])) lc[i] = 1;
+          else { lc[i] = 0; if (county[lu[i]] === county[lv[i]]) inCounty.push(i); }
+        }
+      }
+      // A sliver attached to another county's land may still touch land of its own
+      // county: remember one such unit (sliverHome), so the block can follow its own
+      // county when that county is all in one district. Not for slivers that are the
+      // only land between two areas (a river crossing): a district may rely on those.
+      const bridgeSliver = new Uint8Array(n);
+      for (let i = 0; i < sliverEdge.length; i += 2) if (lc[sliverEdge[i + 1]] === 1) bridgeSliver[sliverEdge[i]] = 1;
+      const sliverHome = new Int32Array(n).fill(-1);
+      for (let i = 0; i < E; i++) {
+        if (!(A.elen[i] > 0)) continue;
+        for (const [x, y] of [[au[i], av[i]], [av[i], au[i]]]) {
+          if (!thin[x] || bridgeSliver[x] || sliverHome[x] >= 0 || water[y] || A.county[y] !== A.county[x]) continue;
+          const yu = attach[y];
+          if (yu >= 0 && yu !== attach[x] && A.county[landIds[yu]] === A.county[x]) sliverHome[x] = yu;
+        }
       }
       // Precinct-stage units: each precinct's land-connected pieces (a precinct
       // split by a river becomes two units), so precinct maps stay contiguous on land.
@@ -1524,14 +2051,36 @@
       return {
         n: nl, pop, dem, rep, area, ext, county, group: piece, precinct: group, mass: landMass,
         eu: Int32Array.from(lu), ev: Int32Array.from(lv), elen: Float64Array.from(ll), econn: Uint8Array.from(lc),
+        countyLinks: Int32Array.from(inCounty),
         landIds, landOf, attach, blocks: n, thin: thin.reduce((x, y) => x + y, 0),
+        blockCounty: A.county, blockWater: water, sliverHome,
       };
     }
 
     // land-graph assignment -> one district per census block (water follows its land)
+    // Water blocks don't count for contiguity (districts connect over land), so a water
+    // block goes with its own county when that county's land is all in one district;
+    // otherwise with the land it's attached to.
     function expandAssign(graph, landAssign, out) {
       const a = out || new Int32Array(graph.blocks);
       for (let u = 0; u < graph.blocks; u++) a[u] = landAssign[graph.attach[u]];
+      const bc = graph.blockCounty, bw = graph.blockWater, home = graph.sliverHome, landOf = graph.landOf;
+      if (bc && bw && landOf) {
+        // county -> its district, or -1 if split (judged on solid land blocks)
+        const one = new Map();
+        for (let u = 0; u < graph.blocks; u++) {
+          if (landOf[u] < 0) continue;
+          const c = bc[u], d = one.get(c);
+          if (d === undefined) one.set(c, a[u]); else if (d !== a[u]) one.set(c, -1);
+        }
+        for (let u = 0; u < graph.blocks; u++) {
+          if (landOf[u] >= 0) continue;
+          const d = one.get(bc[u]);
+          if (d === undefined || d < 0 || d === a[u]) continue;
+          if (bw[u]) a[u] = d;                                            // water
+          else if (home && home[u] >= 0 && landAssign[home[u]] === d) a[u] = d; // sliver touching its county's land
+        }
+      }
       return a;
     }
 

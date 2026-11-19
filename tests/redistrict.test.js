@@ -224,6 +224,19 @@ test("national adjustment: the 2024 US two-party vote was R+1.5, so a D+10 state
   assert.ok(Math.abs(100 * (2 * (center - 0.1) - 1) + 8.5) < 0.01 && Math.abs(100 * (2 * (center + 0.1) - 1) - 31.5) < 0.01);
 });
 
+test("required counties (grid): whole counties when they can balance, contiguous, within tolerance", () => {
+  // 36 counties of 2,500 people; 4 districts of 22,500 = 9 whole counties each
+  const raw = grid(30, 30);
+  const p = RE.createPipeline(G, raw.group, { k: 4, mode: "neutral", tol: 0.01, seed: 3, searchSteps: 3000, coarsePolishSteps: 3000, finePolishSteps: 3000, countyRequired: true });
+  p.init();
+  let guard = 0;
+  while (!p.run(1000)) { if (++guard > 900) throw new Error("did not finish"); }
+  const r = p.report(true);
+  assert.ok(r.contiguity.ok);
+  assert.ok(r.maxDev <= 0.01 + 1e-9, String(r.maxDev));
+  assert.ok(r.splitCounties <= 3, "split counties: " + r.splitCounties);
+});
+
 test("superthinking: cycles keep the best map, never get worse, and stop cleanly", () => {
   const raw = grid(30, 30);
   const e = RE.createEndless(G, raw.group, { k: 6, mode: "maxD", margin: 0, tol: 0.02, seed: 9, searchSteps: 1500, coarsePolishSteps: 1500, finePolishSteps: 1500, endless: true });
@@ -445,6 +458,26 @@ test("MI: districts connect over land; the Upper Peninsula only through its wate
   const blocks = RE.expandAssign(graph, p.assignment());
   assert.ok(landContiguous("MI", blocks, 13));
   assert.strictEqual(noSliverLinks("MI", blocks), 0, "no district held together by sliver blocks");
+});
+
+test("IA, required counties: few splits, contiguous over land, no new splits after the split stage", () => {
+  const { meta, A, graph } = loaded.IA;
+  const g = RE.buildGraph(graph);
+  const p = RE.createPipeline(g, graph.group, { k: 4, mode: "neutral", tol: 0.005, seed: 1, searchSteps: 8000, coarsePolishSteps: 10 * meta.precincts.id.length, finePolishSteps: Math.round(0.5 * graph.n), countyRequired: true });
+  p.init();
+  let afterSplit = -1;
+  while (!p.run(2000)) { if (afterSplit < 0 && (p.stage === "refine" || p.stage === "block")) afterSplit = p._engines.engB.report(false).countySplits; }
+  const r = p.report(true);
+  assert.ok(r.contiguity.ok);
+  assert.ok(r.maxDev <= 0.005 + 1e-9, String(r.maxDev));
+  assert.ok(r.splitCounties <= 3, "split counties: " + r.splitCounties + " (4 districts usually need at most 3)");
+  assert.ok(r.countySplits <= afterSplit, "county pieces went up after the split stage: " + afterSplit + " -> " + r.countySplits);
+  const blocks = RE.expandAssign(graph, p.assignment());
+  assert.ok(landContiguous("IA", blocks, 4), "land-only contiguity, block by block");
+  // independent count from the census blocks: counties whose people live in more than one district
+  const seen = new Map(), split = new Set();
+  for (let u = 0; u < meta.n; u++) { if (!A.pop[u]) continue; const c = A.county[u]; if (!seen.has(c)) seen.set(c, blocks[u]); else if (seen.get(c) !== blocks[u]) split.add(c); }
+  assert.ok(split.size <= r.splitCounties, "populated split counties " + split.size + " vs engine " + r.splitCounties);
 });
 
 test("TX: keeps balancing until every district is within ±0.001% (about ±7 people)", () => {

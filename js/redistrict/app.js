@@ -44,7 +44,7 @@
     form: $("rd-form"), statline: $("rd-statline"), k: $("rd-k"), kReset: $("rd-k-reset"), kHint: $("rd-k-hint"),
     curveField: $("rd-curve-field"), rangeNote: $("rd-curve-range-note"), targetField: $("rd-target-field"), target: $("rd-target"), targetOut: $("rd-target-out"), targetOf: $("rd-target-of"),
     marginField: $("rd-margin-field"), margin: $("rd-margin"), marginOut: $("rd-margin-out"), marginLabel: $("rd-margin-label"), marginHint: $("rd-margin-hint"),
-    tol: $("rd-tol"), county: $("rd-county"), effort: $("rd-effort"), seed: $("rd-seed"), seedClear: $("rd-seed-clear"),
+    tol: $("rd-tol"), county: $("rd-county"), countyHint: $("rd-county-hint"), effort: $("rd-effort"), seed: $("rd-seed"), seedClear: $("rd-seed-clear"),
     run: $("rd-run"), pause: $("rd-pause"), skip: $("rd-skip"),
     canvas: $("rd-map"), tip: $("rd-tip"), loading: $("rd-loading"), legend: $("rd-legend"),
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
@@ -243,7 +243,8 @@
       targetD: Math.min(k, +el.target.value),
       margin: m === "competitive" || m === "proportional" ? 0 : +el.margin.value,
       band: m === "competitive" ? +el.margin.value : 5,
-      countyWeight: +el.county.value,
+      countyWeight: el.county.value === "required" ? 1.5 : +el.county.value,
+      countyRequired: el.county.value === "required",
       searchSteps: ef.search,
       coarsePolishSteps: Math.round(ef.coarsePer * S.D.np),
       finePolishSteps: Math.round(ef.finePer * S.D.n),
@@ -333,14 +334,18 @@
   }
 
   // ---------- status ----------
+  function unitWords(stage) {
+    return stage === "precinct" ? "precincts" : stage === "county" ? "whole counties" : stage === "refine" ? "whole counties, and precincts in split counties" : "census blocks";
+  }
   // UI steps: balance, search, shape (precincts), refine (blocks), verify
   function uiStep(r) {
     if (!r) return "init";
     if (r.phase === "done") return "done";
-    if (r.stage === "precinct" || !r.useCoarse) {
+    if (r.stage === "precinct" || r.stage === "county" || r.stage === "refine" || !r.useCoarse) {
       if (r.phase === "final") return "refine";
       return r.phase === "polish" ? "polish" : r.phase;
     }
+    if (r.stage === "split") return "balance";
     return "refine";
   }
   const STEP_ORDER = ["init", "balance", "search", "polish", "refine", "done"];
@@ -377,7 +382,7 @@
           (c && c.ok ? "All " + fmt(r.k) + " districts verified connected over land." : "Contiguity check failed.") + " <span class='muted'>seed " + S.seedUsed + "</span>";
         setStatus("done", 1, text);
       } else {
-        const unit = r.stage === "precinct" ? "precincts" : "census blocks";
+        const unit = unitWords(r.stage);
         const goalText = r.goal.text ? r.goal.text[0].toLowerCase() + r.goal.text.slice(1) : "";
         const now = type === "paused" ? "paused" : r.stage === "block" && (r.phase === "polish" || r.phase === "final") && r.useCoarse
           ? "refining with census blocks"
@@ -391,7 +396,7 @@
     }
     const step = uiStep(r);
     const steps = fmt(r.step) + " steps · " + pct(r.acceptRate, 0) + " of moves accepted";
-    const unit = r.stage === "precinct" ? "precincts" : "census blocks";
+    const unit = unitWords(r.stage);
     let text;
     if (r.phase === "done") {
       const c = r.contiguity;
@@ -401,10 +406,10 @@
     } else {
       const label = {
         init: "Starting…",
-        // block stage: it keeps going until every district is within the tolerance
-        balance: r.stage === "block" ? escapeHtml(r.goal.text) + " (moving " + unit + ")…" : "Balancing population (moving " + unit + ")…",
+        // block stages: it keeps going until every district is within the tolerance
+        balance: r.stage === "block" || r.stage === "split" ? escapeHtml(r.goal.text) + " (moving " + unit + ")…" : "Balancing population (moving " + unit + ")…",
         search: escapeHtml(r.goal.text) + " (moving " + unit + ")…",
-        polish: r.stage === "precinct" ? "Making districts compact, seat result locked (moving precincts)…" : "Smoothing borders and evening out population, block by block…",
+        polish: r.stage === "precinct" || r.stage === "county" || r.stage === "refine" ? "Making districts compact, seat result locked (moving " + unit + ")…" : "Smoothing borders and evening out population, block by block…",
         final: "Final population balancing, block by block (until every district is within ±" + (100 * r.userTol).toFixed(r.userTol < 0.0001 ? 3 : r.userTol < 0.001 ? 2 : 1) + "%)…",
       }[r.phase] || "";
       text = label + " <span class='muted'>" + steps + "</span>";
@@ -577,7 +582,11 @@
     tiles.push(tile("Population", "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
       "Largest and smallest districts differ by " + fmt(range) + " " + (Math.round(range) === 1 ? "person" : "people") + ". Ideal: " + fmt(r.ideal) + ".", r.maxDev <= r.userTol + 1e-9 ? "" : "is-warn"));
     tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
-    if (r.splitCounties != null) tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.D.meta.counties.length + " counties are split between districts"));
+    if (r.splitCounties != null) {
+      const cr = r.countyRequired;
+      tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.D.meta.counties.length + " counties are split between districts" +
+        (cr ? ". Required mode: split as few as it could" + (cr.forced ? "; " + cr.forced + " " + (cr.forced === 1 ? "is" : "are") + " bigger than a district, so " + (cr.forced === 1 ? "it has" : "they have") + " to be split" : "") + ". Every other county is whole." : ""), cr ? "is-good" : ""));
+    }
     const eg = r.efficiencyGap;
     tiles.push(tile("Efficiency gap", (Math.abs(eg) < 0.0005 ? "0%" : pct(Math.abs(eg))) + (Math.abs(eg) >= 0.0005 ? (eg > 0 ? " R" : " D") : ""), "Wasted-vote advantage. Above ~7% is a red flag."));
     const mm = r.meanMedian;
@@ -792,7 +801,7 @@
     if (m === "competitive") settings.tossUpRangePoints = o.band;
     Object.assign(settings, {
       populationTolerancePercent: round(100 * o.tol, 3), compact: o.compact !== false,
-      countySplitWeight: o.countyWeight, effort: o.effort, superthinking: !!o.endless, seed: S.seedUsed,
+      countySplitWeight: o.countyRequired ? "required" : o.countyWeight, effort: o.effort, superthinking: !!o.endless, seed: S.seedUsed,
     });
     const c = r.contiguity;
     const head = {
@@ -863,6 +872,9 @@
   $("rd-zoom-out").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1 / 1.6));
   $("rd-zoom-reset").addEventListener("click", () => S.map && S.map.resetView());
   el.csv.addEventListener("click", exportCsv);
+  const syncCountyHint = () => { el.countyHint.hidden = el.county.value !== "required"; };
+  el.county.addEventListener("change", syncCountyHint);
+  syncCountyHint();
   // county lines on/off (remembered on this device)
   try { const v = localStorage.getItem("rd-counties"); if (v != null) el.counties.checked = v === "1"; } catch (e) {}
   el.counties.addEventListener("change", () => {

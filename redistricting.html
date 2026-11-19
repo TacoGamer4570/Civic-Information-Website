@@ -152,7 +152,9 @@
               <option value="0">Don't care</option>
               <option value="0.3" selected>Somewhat</option>
               <option value="1.5">Strongly</option>
+              <option value="required">Required (split as few as possible)</option>
             </select>
+            <p class="hint small muted" id="rd-county-hint" hidden>Draws with whole counties, then splits as few counties as it can to even out population. After that, districts only change by moving whole counties (and by shifting the lines inside counties that are already split), so no other county is ever split. Takes longer, and shapes are less compact.</p>
           </div>
           <div class="rd-field">
             <label class="rd-label" for="rd-effort">Effort</label>
@@ -303,6 +305,16 @@
         <li><strong>Refine with census blocks.</strong> For speed, steps 1–3 move whole precincts (built from their blocks). Then the map switches to individual blocks: it balances population much more tightly and smooths the borders, with the seat result still locked. With very many districts, every step runs on blocks.</li>
       </ol>
       <p>Last, every district is checked with a graph search: on each land mass it must be a single piece connected over land, so no part of a district can be stranded inside another one and reached only across water. The same rule is enforced on every move along the way.</p>
+
+      <h3>Counties: "Required"</h3>
+      <p>With <strong>Keep counties whole: Required</strong> the map splits as few counties as it can, then only edits districts with whole counties:</p>
+      <ol>
+        <li><strong>Whole counties.</strong> Each county is one unit (counties with more people than a district have to be split anyway, so those use their precincts). The goal is chased here.</li>
+        <li><strong>Split as few as possible.</strong> Whole counties rarely add up to equal districts, so the districts are linked in a tree (preferring pairs that already share a split county). Along each link, people move first inside a county the two districts already share, then by moving whole counties, and only if that isn't enough by splitting one county. That's at most one new split per link, and often none.</li>
+        <li><strong>Whole-county edits.</strong> Every unsplit county is now a single unit that can only move as a whole. Split counties work by precinct, so the lines inside them can still shift. The goal and compactness are refined, and the number of split counties can only go down from here.</li>
+        <li><strong>Census blocks.</strong> Population is evened out exactly and borders smoothed, but only inside counties that are already split. Small leftover pieces of a county are put back with the rest of it where they can be.</li>
+      </ol>
+      <p>A county is always treated as connected to itself here, even where a road or rail strip is all that joins two parts of it. If population can't be evened out without one more split, it allows one more and says so in the results.</p>
 
       <h3>Changing settings without starting over</h3>
       <p>Once a map is drawn, you can change any setting (goal, safe-seat floor, shape, population tolerance, counties, effort, superthinking) and press <strong>Apply to this map</strong>. The new run starts from the districts on screen instead of a random map, so you can, say, draw a fair map and then gerrymander it. <strong>Start over</strong> always draws a fresh random map. Changing the number of districts or the state needs a fresh map.</p>
