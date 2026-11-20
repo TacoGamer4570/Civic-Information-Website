@@ -1711,13 +1711,13 @@
     // coarsePolishSteps / finePolishSteps.
     // ---------- runner with restarts ----------
     // Each run finishes normally. If the finished map has a district outside the
-    // population tolerance, it's thrown away and the run starts over from a new random
-    // map with a new seed (a map that can't be balanced is usually a dead end).
+    // population tolerance, or below the minimum compactness (opts.minPP), it's thrown
+    // away and the run starts over from a new random map with a new seed.
     // Repeats until a finished map is within the tolerance, or the run is stopped
     // (Skip phase keeps whatever it has).
     function createPipeline(fine, group, opts) {
       let seed = opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed >>> 0;
-      let inner = null, restarts = 0, skipped = false;
+      let inner = null, restarts = 0, skipped = false, popFails = 0, ppFails = 0;
       function make() {
         inner = createPipelineOnce(fine, group, Object.assign({}, opts, {
           seed, restartOnStuck: true, startAssign: restarts ? null : opts.startAssign,
@@ -1740,7 +1740,8 @@
           const done = inner.run(ms);
           if (done && !skipped) {
             const r = inner.report(false);
-            if (r.maxDev > r.userTol + 1e-12) { restart(); return false; }
+            const popBad = r.maxDev > r.userTol + 1e-12, ppBad = r.minPP > 0 && r.belowMinPP > 0;
+            if (popBad || ppBad) { if (popBad) popFails++; if (ppBad) ppFails++; restart(); return false; }
           }
           return done;
         },
@@ -1749,7 +1750,10 @@
         report(full) {
           const r = inner.report(full);
           r.seed = seed; r.restarts = restarts;
-          if (restarts) r.notes = [restarts + " finished map" + (restarts === 1 ? " wasn't" : "s weren't") + " within the population tolerance, so it started over with a new random map (now seed " + seed + ")."].concat(r.notes);
+          if (restarts) {
+          const why = [popFails ? popFails + " outside the population tolerance" : "", ppFails ? ppFails + " below the minimum compactness" : ""].filter(Boolean).join(", ");
+          r.notes = ["Started over with a new random map " + restarts + " time" + (restarts === 1 ? "" : "s") + " (finished maps " + why + "); now seed " + seed + "."].concat(r.notes);
+        }
           return r;
         },
       };
