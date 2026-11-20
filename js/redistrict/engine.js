@@ -1371,7 +1371,7 @@
         if (phase === "balance") {
           if (check && popOk()) { nextPhase(); return; }
           if (phaseStep >= phaseBudget && (treeDone || !countyTreeOn || forceSkip)) {
-            if (strictPop && !forceSkip) { keepBalancing(); return; }
+            if (strictPop && !forceSkip && keepBalancing()) return;
             const w = worstDev();
             notes.push("Couldn't reach ±" + (userTol * 100).toFixed(2) + "% population balance with whole " + unitName + "s; best was ±" + (w * 100).toFixed(3) + "%.");
             setTol(w + 1e-9); baseTol = tol;
@@ -1431,7 +1431,7 @@
             finishOrSmooth();
           } else if (phaseStep >= phaseBudget) {
             if (best) { const cur = assign.slice(); restore(best.assign); if (strictPop && !popOk()) restore(cur); }
-            if (strictPop && !forceSkip && !popOk()) { keepBalancing(); return; }
+            if (strictPop && !forceSkip && !popOk() && keepBalancing()) return;
             finishOrSmooth();
           }
         } else if (phase === "smooth") {
@@ -1459,11 +1459,11 @@
       }
       // out of steps with a district still outside the tolerance: start the round
       // again (the temperature reheats), loosening a lock that may be in the way
-      let stuck = false;
+      // false = don't keep going: inside a pipeline (restartOnStuck) the run finishes
+      // normally, and if the finished map is outside the tolerance the pipeline starts
+      // over from a new map
       function keepBalancing() {
-        // inside a pipeline: a map whose population can't be balanced is usually a
-        // dead end, so stop here and let the pipeline start over from a new map
-        if (opts.restartOnStuck) { stuck = true; phase = "done"; return; }
+        if (opts.restartOnStuck) return false;
         stuckRounds++;
         phaseStep = 0;
         // let tiny population fixes win over shape while it's stuck
@@ -1661,7 +1661,6 @@
         assign,
         init,
         get phase() { return phase; },
-        get stuck() { return stuck; },
         get goal() { return goal; },
         // run until `ms` milliseconds pass or the run finishes
         run(ms) {
@@ -1711,13 +1710,14 @@
     // fine: block graph; group: precinct id per block; opts as in createEngine plus
     // coarsePolishSteps / finePolishSteps.
     // ---------- runner with restarts ----------
-    // If a run ends a balancing round with a district still outside the population
-    // tolerance, that map is thrown away and the run starts over from a new random
+    // Each run finishes normally. If the finished map has a district outside the
+    // population tolerance, it's thrown away and the run starts over from a new random
     // map with a new seed (a map that can't be balanced is usually a dead end).
-    // Repeats until a map balances or the run is stopped.
+    // Repeats until a finished map is within the tolerance, or the run is stopped
+    // (Skip phase keeps whatever it has).
     function createPipeline(fine, group, opts) {
       let seed = opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed >>> 0;
-      let inner = null, restarts = 0;
+      let inner = null, restarts = 0, skipped = false;
       function make() {
         inner = createPipelineOnce(fine, group, Object.assign({}, opts, {
           seed, restartOnStuck: true, startAssign: restarts ? null : opts.startAssign,
@@ -1732,26 +1732,24 @@
       return {
         init() { make(); },
         get stage() { return inner.stage; },
-        get phase() { return inner.stuck ? "balance" : inner.phase; },
+        get phase() { return inner.phase; },
         get useCoarse() { return inner.useCoarse; },
         get seed() { return seed; },
         get _engines() { return inner._engines; },
         run(ms) {
-          const t0 = Date.now();
-          let done = inner.run(ms);
-          while (inner.stuck) {
-            restart();
-            if (Date.now() - t0 >= ms) return false;
-            done = inner.run(Math.max(10, ms - (Date.now() - t0)));
+          const done = inner.run(ms);
+          if (done && !skipped) {
+            const r = inner.report(false);
+            if (r.maxDev > r.userTol + 1e-12) { restart(); return false; }
           }
           return done;
         },
-        finishNow() { inner.finishNow(); if (inner.stuck) restart(); },
+        finishNow() { skipped = true; inner.finishNow(); },
         assignment() { return inner.assignment(); },
         report(full) {
           const r = inner.report(full);
           r.seed = seed; r.restarts = restarts;
-          if (restarts) r.notes = ["Population couldn't be balanced on " + restarts + " map" + (restarts === 1 ? "" : "s") + ", so it started over with a new random map (now seed " + seed + ")."].concat(r.notes);
+          if (restarts) r.notes = [restarts + " finished map" + (restarts === 1 ? " wasn't" : "s weren't") + " within the population tolerance, so it started over with a new random map (now seed " + seed + ")."].concat(r.notes);
           return r;
         },
       };
@@ -1829,14 +1827,12 @@
         return eng.assign;
       }
       function advance() {
-        if (current().stuck) return;
         if (stage === "precinct" && coarse.phase === "done") startFine(Int32Array.from(assignment()), coarse.goal, true);
       }
       return {
         init,
         get stage() { return stage; },
         get phase() { return stage === "block" && eng.phase === "done" ? "done" : current().phase; },
-        get stuck() { return !!current().stuck; },
         useCoarse,
         run(ms) { const done = current().run(ms); if (done) advance(); return this.phase === "done"; },
         finishNow() { current().finishNow(); if (current().phase === "done") advance(); },
@@ -1976,7 +1972,6 @@
       let notesB = [];
       function current() { return stage === "county" ? engA : stage === "split" ? engB : stage === "refine" ? engC : engD; }
       function advance() {
-        if (current().stuck) return;
         if (stage === "county" && engA.phase === "done") startSplit();
         if (stage === "split" && engB.phase === "done") startRefine();
         if (stage === "refine" && engC.phase === "done") startBlocks();
@@ -1993,7 +1988,6 @@
         init,
         get stage() { return stage; },
         get phase() { return stage === "block" && engD.phase === "done" ? "done" : current().phase; },
-        get stuck() { return !!current().stuck; },
         useCoarse: true,
         get _engines() { return { engA, engB, engC, engD }; },
         run(ms) { const done = current().run(ms); if (done) advance(); return this.phase === "done"; },
