@@ -1459,7 +1459,11 @@
       }
       // out of steps with a district still outside the tolerance: start the round
       // again (the temperature reheats), loosening a lock that may be in the way
+      let stuck = false;
       function keepBalancing() {
+        // inside a pipeline: a map whose population can't be balanced is usually a
+        // dead end, so stop here and let the pipeline start over from a new map
+        if (opts.restartOnStuck) { stuck = true; phase = "done"; return; }
         stuckRounds++;
         phaseStep = 0;
         // let tiny population fixes win over shape while it's stuck
@@ -1657,6 +1661,7 @@
         assign,
         init,
         get phase() { return phase; },
+        get stuck() { return stuck; },
         get goal() { return goal; },
         // run until `ms` milliseconds pass or the run finishes
         run(ms) {
@@ -1705,7 +1710,54 @@
     // ---------- two-level runner: precincts first, then census blocks ----------
     // fine: block graph; group: precinct id per block; opts as in createEngine plus
     // coarsePolishSteps / finePolishSteps.
+    // ---------- runner with restarts ----------
+    // If a run ends a balancing round with a district still outside the population
+    // tolerance, that map is thrown away and the run starts over from a new random
+    // map with a new seed (a map that can't be balanced is usually a dead end).
+    // Repeats until a map balances or the run is stopped.
     function createPipeline(fine, group, opts) {
+      let seed = opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed >>> 0;
+      let inner = null, restarts = 0;
+      function make() {
+        inner = createPipelineOnce(fine, group, Object.assign({}, opts, {
+          seed, restartOnStuck: true, startAssign: restarts ? null : opts.startAssign,
+        }));
+        inner.init();
+      }
+      function restart() {
+        restarts++;
+        seed = (Math.imul(seed ^ (seed >>> 16), 0x45d9f3b) + 0x9e3779b9 + restarts) >>> 0;
+        make();
+      }
+      return {
+        init() { make(); },
+        get stage() { return inner.stage; },
+        get phase() { return inner.stuck ? "balance" : inner.phase; },
+        get useCoarse() { return inner.useCoarse; },
+        get seed() { return seed; },
+        get _engines() { return inner._engines; },
+        run(ms) {
+          const t0 = Date.now();
+          let done = inner.run(ms);
+          while (inner.stuck) {
+            restart();
+            if (Date.now() - t0 >= ms) return false;
+            done = inner.run(Math.max(10, ms - (Date.now() - t0)));
+          }
+          return done;
+        },
+        finishNow() { inner.finishNow(); if (inner.stuck) restart(); },
+        assignment() { return inner.assignment(); },
+        report(full) {
+          const r = inner.report(full);
+          r.seed = seed; r.restarts = restarts;
+          if (restarts) r.notes = ["Population couldn't be balanced on " + restarts + " map" + (restarts === 1 ? "" : "s") + ", so it started over with a new random map (now seed " + seed + ")."].concat(r.notes);
+          return r;
+        },
+      };
+    }
+
+    function createPipelineOnce(fine, group, opts) {
       if (opts.countyRequired) return createCountyPipeline(fine, group, opts);
       const rand = makeRng(opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed);
       const k = opts.k | 0;
@@ -1777,12 +1829,14 @@
         return eng.assign;
       }
       function advance() {
+        if (current().stuck) return;
         if (stage === "precinct" && coarse.phase === "done") startFine(Int32Array.from(assignment()), coarse.goal, true);
       }
       return {
         init,
         get stage() { return stage; },
         get phase() { return stage === "block" && eng.phase === "done" ? "done" : current().phase; },
+        get stuck() { return !!current().stuck; },
         useCoarse,
         run(ms) { const done = current().run(ms); if (done) advance(); return this.phase === "done"; },
         finishNow() { current().finishNow(); if (current().phase === "done") advance(); },
@@ -1922,6 +1976,7 @@
       let notesB = [];
       function current() { return stage === "county" ? engA : stage === "split" ? engB : stage === "refine" ? engC : engD; }
       function advance() {
+        if (current().stuck) return;
         if (stage === "county" && engA.phase === "done") startSplit();
         if (stage === "split" && engB.phase === "done") startRefine();
         if (stage === "refine" && engC.phase === "done") startBlocks();
@@ -1938,6 +1993,7 @@
         init,
         get stage() { return stage; },
         get phase() { return stage === "block" && engD.phase === "done" ? "done" : current().phase; },
+        get stuck() { return !!current().stuck; },
         useCoarse: true,
         get _engines() { return { engA, engB, engC, engD }; },
         run(ms) { const done = current().run(ms); if (done) advance(); return this.phase === "done"; },

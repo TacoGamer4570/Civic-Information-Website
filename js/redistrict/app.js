@@ -307,6 +307,8 @@
     const final = msg.type === "done";
     S.liveReport = msg.report;
     S.liveAssign = msg.assign;
+    // a run that started over on a new map reports the seed it's on now
+    if (msg.report && msg.report.seed != null && S.opts && !S.opts.endless) S.seedUsed = msg.report.seed;
     let fresh = false;
     if (msg.best) { S.best = msg.best; fresh = true; }
     // superthinking shows the best map so far unless you're watching the live search
