@@ -341,8 +341,17 @@
       function addCls(c, sgn) { if (c & 1) cntSafeD += sgn; if (c & 2) cntSafeR += sgn; if (c & 4) cntComp += sgn; if (c & 8) cntWinD += sgn; }
 
       // refresh cached per-district terms for district d
+      // Minimum compactness (opts.minPP, Polsby-Popper 0..1): every district below it
+      // adds its shortfall (in points) to the score, so the compactness phases push
+      // those districts up first. 0 = any shape (no compactness phase at all).
+      const minPP = opts.minPP == null ? 0 : opts.minPP;
+      const dFloor = new Float64Array(k);
+      let floorSum = 0;
+      function floorOf(inv) { const pp = inv > 0 ? 1 / inv : 0; return pp < minPP ? (minPP - pp) * 100 : 0; }
+      function floorAdj(d) { floorSum -= dFloor[d]; dFloor[d] = floorOf(dInv[d]); floorSum += dFloor[d]; }
       function refresh(d) {
         compSum -= dInv[d]; dInv[d] = invPP(dArea[d], dPerim[d]); compSum += dInv[d];
+        if (minPP > 0) floorAdj(d);
         penSum -= dPen[d]; dPen[d] = popPen(dPop[d]); penSum += dPen[d];
         addCls(dCls[d], -1); shares[d] = share(d); dCls[d] = cls(shares[d]); addCls(dCls[d], 1);
         if (nTier) { addTier(dTier[d], -1); dTier[d] = tierBits(shares[d]); addTier(dTier[d], 1); }
@@ -351,7 +360,7 @@
       // every district within the population tolerance?
       function popOk() { const lim = tol * ideal + 1e-6; for (let d = 0; d < k; d++) if (Math.abs(dPop[d] - ideal) > lim) return false; return true; }
       // resync running sums (they drift slightly over millions of updates)
-      function resync() { compSum = 0; for (let d = 0; d < k; d++) compSum += dInv[d]; recomputePen(); curE = energy(); }
+      function resync() { compSum = 0; floorSum = 0; for (let d = 0; d < k; d++) { compSum += dInv[d]; floorSum += dFloor[d]; } recomputePen(); curE = energy(); }
 
       function recomputeAll() {
         dPop.fill(0); dDem.fill(0); dRep.fill(0); dArea.fill(0); dPerim.fill(0); dCnt.fill(0); cd.fill(0); cPresent.fill(0);
@@ -367,8 +376,10 @@
         for (let c = 0; c < nc; c++) if (cPresent[c] > 1) splits += cPresent[c] - 1;
         compSum = 0; penSum = 0; cntSafeD = cntSafeR = cntComp = cntWinD = 0;
         cntTier.fill(0);
+        floorSum = 0;
         for (let d = 0; d < k; d++) {
           dInv[d] = invPP(dArea[d], dPerim[d]); compSum += dInv[d];
+          dFloor[d] = minPP > 0 ? floorOf(dInv[d]) : 0; floorSum += dFloor[d];
           dPen[d] = popPen(dPop[d]); penSum += dPen[d];
           shares[d] = share(d); dCls[d] = cls(shares[d]); addCls(dCls[d], 1);
           if (nTier) { dTier[d] = tierBits(shares[d]); addTier(dTier[d], 1); }
@@ -420,7 +431,7 @@
       let curE = 0;
       // compact=false skips the compactness phase and drops compactness from every
       // score; districts must still be contiguous (every move checks that).
-      const compact = opts.compact !== false;
+      const compact = opts.compact !== false && (opts.minPP == null || opts.minPP > 0);
       const phases = (opts.phases || (mode === "neutral" ? ["polish", "final"] : ["search", "polish", "final"]))
         .filter((p) => compact || p !== "polish");
       let phaseIdx = -1;
@@ -439,7 +450,8 @@
         if (mode === "competitive") return cntComp >= lock.comp;
         return cntSafeD >= lock.safeD && cntSafeR >= lock.safeR && (lock.fair == null || curFair <= lock.fair);
       }
-      function energy() { return wPart * partE + wComp * compSum + wCty * splits + penSum; }
+      // a district below the minimum counts 3x per point of shortfall, on top of the usual shape cost
+      function energy() { return wPart * partE + wComp * (compSum + 3 * floorSum) + wCty * splits + penSum; }
 
       // ----- random cut edge -----
       function randomCutEdge() {
@@ -737,6 +749,7 @@
         dPop[B] = s[6]; dDem[B] = s[7]; dRep[B] = s[8]; dArea[B] = s[9]; dPerim[B] = s[10]; dCnt[B] = s[11];
         dInv[A] = s[12]; dPen[A] = s[13]; dCls[A] = s[14]; shares[A] = s[15];
         dInv[B] = s[16]; dPen[B] = s[17]; dCls[B] = s[18]; shares[B] = s[19];
+        if (minPP > 0) { floorAdj(A); floorAdj(B); }
         compSum = s[20]; penSum = s[21]; splits = s[22]; partE = s[23];
         cntSafeD = s[24]; cntSafeR = s[25]; cntComp = s[26]; cntWinD = s[27];
         dTier[A] = s[28]; dTier[B] = s[29]; curFair = s[30];
@@ -1602,6 +1615,7 @@
           gerry: isMax ? { floor: floorPts, safe: cntTier[0], wins: cntTier[nTier - 1], margins: partyMargins() } : null,
           efficiencyGap: (wastedD - wastedR) / votes, // >0 means Dem votes are wasted more (map favors R)
           meanMedian: median - mean,                  // <0 means map favors R
+          minPP, belowMinPP: minPP > 0 ? districts.filter((x) => x.pp < minPP - 1e-9).length : 0,
           curveDev: fairness(),
           curveWindow: { lo: stateShare + xLo, hi: stateShare + xHi }, // statewide Harris shares the curve is scored over                       // gap from the 1-for-1 seats-votes line (points), lower is better
           splitCounties: countyOn ? splitCounties : null, countySplits: splits,
@@ -2159,7 +2173,7 @@
     function createEndless(fine, group, opts) {
       const mode = opts.mode || "neutral";
       const h = (opts.margin || 0) / 200, tol = opts.tol == null ? 0.005 : opts.tol;
-      const compact = opts.compact !== false;
+      const compact = opts.compact !== false && (opts.minPP == null || opts.minPP > 0);
       let cycle = 0, pipe = null, best = null, improved = false, stopped = false;
       const baseSeed = opts.seed == null ? (Math.random() * 4294967296) >>> 0 : opts.seed;
 
@@ -2180,7 +2194,8 @@
         else if (mode === "target") primary = [-deficit(r)];
         // proportional: closeness to the 1-for-1 seats-votes line
         else if (mode === "proportional") primary = [-r.curveDev];
-        const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9), 0) : -r.maxDev;
+        const minPP = opts.minPP || 0;
+        const shape = compact ? -r.districts.reduce((a, d) => a + (d.pp > 0 ? 1 / d.pp : 1e9) + (d.pp < minPP ? 300 * (minPP - d.pp) : 0), 0) : -r.maxDev;
         return valid ? [1].concat(primary, [shape]) : [0, -r.maxDev].concat(primary);
       }
       function better(a, b) {

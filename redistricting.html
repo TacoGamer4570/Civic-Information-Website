@@ -98,13 +98,14 @@
           </div>
         </fieldset>
 
-        <fieldset class="rd-field">
-          <legend>Shape</legend>
-          <div class="rd-goals" id="rd-compact">
-            <label class="rd-goal"><input type="radio" name="compact" value="1" checked><span><strong>Keep districts compact</strong><small>After the goal is met, tighten the shapes.</small></span></label>
-            <label class="rd-goal"><input type="radio" name="compact" value="0"><span><strong>Ignore compactness</strong><small>Any shape goes. Districts are still one connected piece.</small></span></label>
+        <div class="rd-field">
+          <label class="rd-label" for="rd-minpp">Minimum compactness</label>
+          <div class="rd-range">
+            <input type="range" id="rd-minpp" min="0" max="1" step="0.01" value="0.2">
+            <output id="rd-minpp-out" class="mono">0.20 · Moderate</output>
           </div>
-        </fieldset>
+          <p class="hint small muted">The lowest Polsby–Popper score any district should have (1 = a circle). 0 = any shape: districts are still one connected piece. Above about 0.5 most states can't get every district there, so it gets as close as it can.</p>
+        </div>
 
         <div class="rd-field" id="rd-target-field" hidden>
           <label class="rd-label" for="rd-target">Democratic seats <span class="muted" id="rd-target-of"></span></label>

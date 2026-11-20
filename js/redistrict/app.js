@@ -49,7 +49,7 @@
     canvas: $("rd-map"), tip: $("rd-tip"), loading: $("rd-loading"), legend: $("rd-legend"),
     phases: $("rd-phases"), bar: $("rd-progress-bar"), statusText: $("rd-status-text"),
     results: $("rd-results"), tiles: $("rd-tiles"), chart: $("rd-chart"), sv: $("rd-sv"), svTip: $("rd-sv-tip"), svLegendWindow: $("rd-sv-legend-window"), legendTarget: $("rd-legend-target"), tbody: document.querySelector("#rd-table tbody"), notes: $("rd-notes"),
-    counties: $("rd-counties"), csv: $("rd-csv"), json: $("rd-json"), png: $("rd-png"),
+    counties: $("rd-counties"), minpp: $("rd-minpp"), minppOut: $("rd-minpp-out"), csv: $("rd-csv"), json: $("rd-json"), png: $("rd-png"),
     superOn: $("rd-super"), live: $("rd-live"), liveWrap: $("rd-live-wrap"),
     apply: $("rd-apply"), applyHint: $("rd-apply-hint"),
   };
@@ -238,7 +238,8 @@
     const m = mode();
     return {
       k, mode: m, seed, effort: el.effort.value, curve: el.form.elements.curve.value,
-      compact: el.form.elements.compact.value !== "0",
+      minPP: +el.minpp.value,
+      compact: +el.minpp.value > 0,
       endless: el.superOn.checked,
       // exact: every district within 1 person of the ideal (the ideal is rarely a whole
       // number, so in practice each district is the ideal rounded down or up)
@@ -588,7 +589,8 @@
     const offPeople = r.maxDev * r.ideal;
     tiles.push(tile("Population", S.opts.exactPop ? (offPeople < 1.5 ? "Exact" : "±" + fmt(Math.ceil(offPeople - 1e-6)) + " people") : "±" + pct(r.maxDev, r.maxDev < 0.001 ? 3 : 2),
       "Largest and smallest districts differ by " + fmt(range) + " " + (Math.round(range) === 1 ? "person" : "people") + ". Ideal: " + fmt(r.ideal) + ".", r.maxDev <= r.userTol + 1e-9 ? "" : "is-warn"));
-    tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2)));
+    tiles.push(tile("Compactness", r.meanPP.toFixed(2), "Average Polsby–Popper (1 = circle). Least compact: " + Math.min.apply(null, r.districts.map((x) => x.pp)).toFixed(2) +
+      (r.minPP > 0 ? ". Minimum set: " + r.minPP.toFixed(2) + (r.belowMinPP ? " (" + r.belowMinPP + " district" + (r.belowMinPP === 1 ? " is" : "s are") + " below it)" : ", every district meets it") : ""), r.minPP > 0 && r.belowMinPP ? "is-warn" : ""));
     if (r.splitCounties != null) {
       const cr = r.countyRequired;
       tiles.push(tile("County splits", fmt(r.splitCounties), "of " + S.D.meta.counties.length + " counties are split between districts" +
@@ -807,7 +809,7 @@
     else if (m === "target") settings.safeSeatMarginPoints = o.margin;
     if (m === "competitive") settings.tossUpRangePoints = o.band;
     Object.assign(settings, {
-      populationTolerance: o.exactPop ? "exact (every district within 1 person of the ideal)" : "±" + round(100 * o.tol, 3) + "%", compact: o.compact !== false,
+      populationTolerance: o.exactPop ? "exact (every district within 1 person of the ideal)" : "±" + round(100 * o.tol, 3) + "%", minimumPolsbyPopper: o.minPP,
       countySplitWeight: o.countyRequired ? "required" : o.countyWeight, effort: o.effort, superthinking: !!o.endless, seed: S.seedUsed,
     });
     const c = r.contiguity;
@@ -879,6 +881,11 @@
   $("rd-zoom-out").addEventListener("click", () => S.map && S.map.zoomAt(S.map.w / 2, S.map.h / 2, 1 / 1.6));
   $("rd-zoom-reset").addEventListener("click", () => S.map && S.map.resetView());
   el.csv.addEventListener("click", exportCsv);
+  // minimum compactness slider: number plus a plain-words label
+  function minppWords(v) { return v === 0 ? "Any shape" : v < 0.15 ? "Loose" : v < 0.25 ? "Moderate" : v < 0.35 ? "Compact" : v < 0.5 ? "Very compact" : "Extreme"; }
+  const syncMinpp = () => { const v = +el.minpp.value; el.minppOut.textContent = v.toFixed(2) + " · " + minppWords(v); };
+  el.minpp.addEventListener("input", syncMinpp);
+  syncMinpp();
   const syncCountyHint = () => { el.countyHint.hidden = el.county.value !== "required"; };
   el.county.addEventListener("change", syncCountyHint);
   syncCountyHint();
